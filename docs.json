@@ -1,11 +1,9 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "sequoia",
-  "name": "VirtCloud",
+  "theme": "willow",
+  "name": "Celum",
   "colors": {
-    "primary": "#ef7025",
-    "light": "#eec9bc",
-    "dark": "#4fa1ab"
+    "primary": "#ef7025"
   },
   "favicon": {
     "light": "/favicon.svg",
