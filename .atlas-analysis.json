@@ -1,0 +1,104 @@
+{
+  "projectType": "saas",
+  "projectName": "VirtCloud",
+  "projectDescription": "A cloud-based virtualization platform for creating, managing, and scaling virtual machines and infrastructure.",
+  "theme": "aspen",
+  "primaryColor": "#ef7025",
+  "lightColor": "#eec9bc",
+  "darkColor": "#4fa1ab",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "concepts"
+            ]
+          },
+          {
+            "group": "Virtual Machines",
+            "pages": [
+              "vms/create",
+              "vms/manage",
+              "vms/snapshots",
+              "vms/templates"
+            ]
+          },
+          {
+            "group": "Networking",
+            "pages": [
+              "networking/overview",
+              "networking/virtual-networks",
+              "networking/firewalls",
+              "networking/load-balancers"
+            ]
+          },
+          {
+            "group": "Storage",
+            "pages": [
+              "storage/overview",
+              "storage/volumes",
+              "storage/backups"
+            ]
+          },
+          {
+            "group": "Account & Security",
+            "pages": [
+              "account/users-roles",
+              "account/ssh-keys",
+              "account/billing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Resources",
+            "pages": [
+              "api/virtual-machines",
+              "api/networks",
+              "api/storage",
+              "api/snapshots"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Virtual machine provisioning and lifecycle management",
+    "Snapshot and template creation for rapid deployment",
+    "Software-defined virtual networking with firewall rules",
+    "Persistent block storage volumes with automated backups",
+    "Multi-user account management with role-based access control",
+    "REST API for programmatic infrastructure control",
+    "Load balancing across virtual machine instances",
+    "SSH key management for secure VM access"
+  ],
+  "publicApiSurface": [
+    "GET/POST /virtual-machines",
+    "GET/PUT/DELETE /virtual-machines/{id}",
+    "POST /virtual-machines/{id}/start",
+    "POST /virtual-machines/{id}/stop",
+    "POST /virtual-machines/{id}/reboot",
+    "GET/POST /snapshots",
+    "GET/POST /networks",
+    "GET/POST /volumes",
+    "GET/POST /firewalls",
+    "GET/POST /load-balancers",
+    "GET/POST /ssh-keys"
+  ]
+}

@@ -1,0 +1,139 @@
+---
+title: "Create and Launch Virtual Machines on VirtCloud Now"
+sidebarTitle: "Create VMs"
+description: "Provision new virtual machines on VirtCloud using the dashboard or REST API. Choose your region, OS image, size, and SSH key in minutes."
+---
+
+Virtual machines are the core compute unit on VirtCloud. You can spin up a new VM in under a minute by selecting a region, OS image, hardware size, and SSH key — either through the web dashboard or programmatically via the REST API. This guide walks you through both paths.
+
+## Prerequisites
+
+Before you create your first VM, make sure you have the following in place:
+
+- **VirtCloud account** — sign up at [virtcloud.io](https://virtcloud.io) if you haven't already.
+- **SSH key added** — at least one SSH public key must be saved to your account. See [Managing SSH Keys](/account/ssh-keys) for instructions.
+- **Billing configured** — a valid payment method must be on file. Visit the Billing section of your account settings to add one.
+
+## Create a Virtual Machine
+
+<Tabs>
+  <Tab title="Dashboard">
+    <Steps>
+      <Step title="Open the New VM dialog">
+        In the left sidebar, click **Virtual Machines**, then click the **New VM** button in the top-right corner of the VM list.
+      </Step>
+      <Step title="Name your VM and choose a region">
+        Enter a name for your VM (for example, `web-server-01`). Names must be lowercase, alphanumeric, and may include hyphens. Then select the **region** closest to your users or workload:
+
+        | Region | Location |
+        |--------|----------|
+        | `us-east-1` | Virginia, USA |
+        | `us-west-2` | Oregon, USA |
+        | `eu-west-1` | Ireland, EU |
+        | `ap-southeast-1` | Singapore, APAC |
+      </Step>
+      <Step title="Choose an OS image">
+        Select one of the available base images from the image picker:
+
+        - Ubuntu 22.04 LTS
+        - Debian 12
+        - CentOS Stream 9
+        - Rocky Linux 9
+        - Windows Server 2022
+
+        Each image is kept up to date with the latest security patches at the time of launch.
+      </Step>
+      <Step title="Choose a size">
+        Pick the hardware size that matches your workload. See the [Available sizes](#available-sizes) table below for full specs and pricing.
+      </Step>
+      <Step title="Select SSH key(s)">
+        Choose one or more SSH keys from your saved keys. All selected keys will be injected into the VM at boot under the default admin user (`ubuntu` for Ubuntu images, `root` for others, and `Administrator` for Windows via RDP).
+      </Step>
+      <Step title="Configure optional settings">
+        Expand **Advanced Options** to:
+
+        - **Attach to a VPC** — select an existing Virtual Private Cloud to place the VM on a private network segment.
+        - **Add volumes** — attach one or more block storage volumes for additional persistent disk capacity.
+        - **Add tags** — key/value labels for organizing and filtering your resources.
+      </Step>
+      <Step title="Launch the VM">
+        Review the configuration summary on the right panel, then click **Launch VM**. The VM will appear in your list with a status of **Provisioning** and transition to **Running** within 30–60 seconds.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="API">
+    Send a `POST` request to `/v1/virtual-machines` with your desired configuration in the request body. Replace `YOUR_API_KEY` with a valid API key from your account settings.
+
+    <CodeGroup>
+      ```bash cURL
+      curl -X POST https://api.virtcloud.io/v1/virtual-machines \
+        -H "Authorization: Bearer YOUR_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d '{
+          "name": "web-server-01",
+          "region": "us-east-1",
+          "size": "c1.medium",
+          "image": "ubuntu-22.04",
+          "ssh_key_ids": ["sk_abc123"],
+          "vpc_id": "vpc_xyz789",
+          "tags": ["production", "web"]
+        }'
+      ```
+    </CodeGroup>
+
+    A successful request returns `201 Created` with the new VM object:
+
+    ```json
+    {
+      "id": "vm_a1b2c3d4",
+      "name": "web-server-01",
+      "status": "provisioning",
+      "region": "us-east-1",
+      "size": "c1.medium",
+      "image": "ubuntu-22.04",
+      "public_ip": null,
+      "private_ip": "10.0.1.5",
+      "created_at": "2024-01-15T10:30:00Z"
+    }
+    ```
+
+    <Note>
+      The `public_ip` field is `null` immediately after creation. VirtCloud assigns a public IP address during provisioning — poll `GET /v1/virtual-machines/{id}` until `status` is `running` to retrieve the assigned address.
+    </Note>
+  </Tab>
+</Tabs>
+
+## VM Status Transitions
+
+After you submit a create request, your VM moves through the following states:
+
+| Status | Description |
+|--------|-------------|
+| `provisioning` | VirtCloud is allocating resources, writing the disk image, and configuring networking. |
+| `running` | The VM has booted and is reachable via SSH or RDP. |
+
+Initial boot typically completes in **30–60 seconds**. If the VM remains in `provisioning` for longer than five minutes, check the [VirtCloud status page](https://status.virtcloud.io) for any ongoing incidents, or contact support.
+
+## Available Sizes
+
+Choose the size that best fits your workload. All sizes include the listed root disk; additional volumes can be attached separately.
+
+| Size | vCPU | RAM | Root Disk | Use Case |
+|------|------|-----|-----------|----------|
+| `c1.small` | 1 | 1 GB | 20 GB | Dev/test, lightweight services |
+| `c1.medium` | 2 | 4 GB | 40 GB | Small web servers, CI runners |
+| `c2.large` | 4 | 8 GB | 80 GB | Application servers, small databases |
+| `c2.xlarge` | 8 | 16 GB | 160 GB | High-traffic apps, larger databases |
+
+## Available Regions
+
+| Region Slug | Location | Notes |
+|-------------|----------|-------|
+| `us-east-1` | Virginia, USA | Lowest latency for East Coast US |
+| `us-west-2` | Oregon, USA | Lowest latency for West Coast US |
+| `eu-west-1` | Ireland, EU | GDPR-compliant EU data residency |
+| `ap-southeast-1` | Singapore, APAC | Lowest latency for Southeast Asia |
+
+<Note>
+  Not all VM sizes are available in every region. The dashboard image picker and the API will return a `422 Unprocessable Entity` error if a size is unavailable in your chosen region.
+</Note>

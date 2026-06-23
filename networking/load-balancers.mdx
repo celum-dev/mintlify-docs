@@ -1,0 +1,209 @@
+---
+title: "Set Up Load Balancers to Distribute Traffic Across VMs"
+sidebarTitle: "Load Balancers"
+description: "Configure VirtCloud load balancers to spread HTTP, HTTPS, or TCP traffic across your VM fleet with health checks, SSL termination, and sticky sessions."
+---
+
+A VirtCloud load balancer gives your application a single public IP address and distributes incoming connections across a pool of backend VMs. When a VM becomes unhealthy or you add capacity, the load balancer adjusts automatically—your users see no downtime and your DNS record never changes. Load balancers are the foundation of horizontal scaling and high availability on VirtCloud.
+
+## Supported Protocols
+
+| Protocol | Use Case |
+|---|---|
+| **HTTP** | Unencrypted web traffic; supports path-based health checks |
+| **HTTPS** | Encrypted web traffic with SSL termination at the load balancer; backend VMs receive plain HTTP |
+| **TCP** | Any TCP workload that isn't HTTP/HTTPS—databases, game servers, custom protocols |
+
+## Creating a Load Balancer
+
+<Steps>
+  <Step title="Go to Load Balancers">
+    In the VirtCloud dashboard, open **Networking → Load Balancers** and click **Create Load Balancer**.
+  </Step>
+  <Step title="Choose a region and protocol">
+    Select the **Region** where your backend VMs live, then choose a **Protocol** (HTTP, HTTPS, or TCP). The load balancer must be in the same region as its backend VMs.
+  </Step>
+  <Step title="Configure ports">
+    Set the **Listening Port** (the port the load balancer accepts traffic on, e.g., `443`) and the **Forwarding Port** (the port on each backend VM, e.g., `80`).
+  </Step>
+  <Step title="Select an algorithm">
+    Choose a load-balancing algorithm: **Round Robin**, **Least Connections**, or **IP Hash**. See [Load Balancing Algorithms](#load-balancing-algorithms) for guidance.
+  </Step>
+  <Step title="Add backend VMs">
+    Select the VMs that will serve as backends. You can add or remove VMs after creation without downtime.
+  </Step>
+  <Step title="Configure health checks">
+    Set the health-check **Path** (for HTTP/HTTPS), **Interval**, and thresholds. The load balancer stops sending traffic to a VM that fails the threshold number of consecutive checks.
+  </Step>
+  <Step title="Create">
+    Click **Create Load Balancer**. A public IP is assigned within seconds. DNS propagation for any domain you point at this IP may take a few minutes.
+  </Step>
+</Steps>
+
+You can also provision a load balancer through the API:
+
+<CodeGroup>
+```bash Create Load Balancer
+curl -X POST https://api.virtcloud.io/v1/load-balancers \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "web-lb",
+    "region": "us-east-1",
+    "protocol": "https",
+    "port": 443,
+    "forwarding_port": 80,
+    "algorithm": "round_robin",
+    "virtual_machine_ids": ["vm_abc123", "vm_def456"],
+    "health_check": {
+      "protocol": "http",
+      "path": "/health",
+      "interval": 10,
+      "healthy_threshold": 2,
+      "unhealthy_threshold": 3
+    }
+  }'
+```
+
+```json Response
+{
+  "id": "lb_4qt8wm1z",
+  "name": "web-lb",
+  "region": "us-east-1",
+  "public_ip": "198.51.100.42",
+  "protocol": "https",
+  "port": 443,
+  "forwarding_port": 80,
+  "algorithm": "round_robin",
+  "status": "active",
+  "virtual_machine_ids": ["vm_abc123", "vm_def456"],
+  "health_check": {
+    "protocol": "http",
+    "path": "/health",
+    "interval": 10,
+    "healthy_threshold": 2,
+    "unhealthy_threshold": 3
+  },
+  "created_at": "2024-11-14T13:00:00Z"
+}
+```
+</CodeGroup>
+
+## Load Balancing Algorithms
+
+| Algorithm | How It Works | Best For |
+|---|---|---|
+| `round_robin` | Sends each new connection to the next VM in sequence | Stateless workloads with uniform request cost |
+| `least_connections` | Sends each new connection to the VM with the fewest active connections | Long-lived connections or workloads with variable processing time |
+| `ip_hash` | Hashes the client's IP to always route a given client to the same VM | Workloads that need soft session affinity without cookies |
+
+You can update the algorithm on an existing load balancer at any time with `PATCH /v1/load-balancers/{id}`.
+
+## Health Checks
+
+The load balancer polls each backend VM at the configured interval. A VM is removed from the rotation after `unhealthy_threshold` consecutive failures and re-added after `healthy_threshold` consecutive successes.
+
+| Field | Type | Description |
+|---|---|---|
+| `protocol` | string | `http`, `https`, or `tcp` |
+| `path` | string | URL path the load balancer requests (HTTP/HTTPS only), e.g., `"/health"` |
+| `interval` | integer | Seconds between health-check requests (minimum: `5`) |
+| `healthy_threshold` | integer | Consecutive successes required to mark a VM healthy again |
+| `unhealthy_threshold` | integer | Consecutive failures before a VM is removed from rotation |
+
+<Note>
+  Your application must respond to health-check requests with an HTTP `200` status code (for HTTP/HTTPS checks) within 5 seconds. Return a non-`200` status or time out to signal that the instance should be taken out of rotation. Keep the health-check endpoint lightweight—it runs on every VM at every interval.
+</Note>
+
+Make sure your firewall rules allow inbound traffic from the load balancer to the health-check port on each backend VM. The load balancer's source IP is listed on the load balancer detail page in the dashboard.
+
+## SSL Termination
+
+When you select the `https` protocol, the load balancer terminates TLS and forwards plain HTTP to your backend VMs. This offloads certificate management and TLS processing from your application servers.
+
+<Note>
+  Backend VMs receive HTTP traffic on the forwarding port, not HTTPS. Your application code does not need to handle TLS. If your application checks the `X-Forwarded-Proto` header to detect the original scheme, ensure your code treats `https` as secure.
+</Note>
+
+You have two options for SSL certificates:
+
+<Tabs>
+  <Tab title="Managed Let's Encrypt">
+    VirtCloud can provision and auto-renew a free Let's Encrypt certificate for any domain you own. In the dashboard, navigate to your load balancer's **SSL** tab, select **Managed Certificate**, and enter your domain name. Point your domain's DNS `A` record at the load balancer's public IP, then click **Provision Certificate**.
+
+    Managed certificates renew automatically 30 days before expiry. No action is required on your part after the initial setup.
+  </Tab>
+  <Tab title="Custom Certificate">
+    Upload your own certificate if you use a commercial CA or wildcard certificate. Prepare three files:
+
+    - **Certificate** (`cert.pem`) — your domain certificate
+    - **Private Key** (`key.pem`) — the private key matching your certificate
+    - **CA Bundle** (`chain.pem`) — intermediate certificates from your CA
+
+    In the dashboard, navigate to **SSL → Custom Certificate**, paste the file contents into the corresponding fields, and click **Upload**. You are responsible for renewing and re-uploading the certificate before it expires.
+  </Tab>
+</Tabs>
+
+## Session Persistence (Sticky Sessions)
+
+By default, each new connection is distributed independently. Enable sticky sessions to route a client's subsequent requests to the same backend VM for the duration of a session:
+
+```bash
+curl -X PATCH https://api.virtcloud.io/v1/load-balancers/lb_4qt8wm1z \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sticky_sessions": {
+      "type": "cookies",
+      "ttl_seconds": 300
+    }
+  }'
+```
+
+| Field | Description |
+|---|---|
+| `type` | Only `"cookies"` is supported. The load balancer sets a `__vcsticky` cookie on the first response. |
+| `ttl_seconds` | How long (in seconds) the sticky session is maintained. After this period, the client is re-balanced to any healthy VM. |
+
+<Tip>
+  Sticky sessions are a workaround for stateful application architectures, not a replacement for shared session storage. For production systems, store session data in a shared cache (e.g., Redis) so any backend VM can serve any request—this also makes rolling deployments and VM replacements seamless.
+</Tip>
+
+## Adding and Removing Backend VMs
+
+Add a VM to a running load balancer without interrupting existing connections:
+
+```bash
+curl -X POST https://api.virtcloud.io/v1/load-balancers/lb_4qt8wm1z/add-vm \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "virtual_machine_id": "vm_ghi789"
+  }'
+```
+
+Remove a VM from the pool when you want to take it out of rotation (e.g., for maintenance):
+
+```bash
+curl -X POST https://api.virtcloud.io/v1/load-balancers/lb_4qt8wm1z/remove-vm \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "virtual_machine_id": "vm_ghi789"
+  }'
+```
+
+The load balancer drains existing connections to the removed VM over a 30-second window before fully stopping traffic to it. New connections are distributed to the remaining healthy VMs immediately.
+
+## Viewing Access Logs
+
+The load balancer records every inbound request—including the client IP, request method, path, response code, and latency—in the access log.
+
+To view access logs in the dashboard:
+
+1. Go to **Networking → Load Balancers** and select your load balancer.
+2. Click the **Logs** tab.
+3. Use the time-range selector to filter logs by date and time.
+4. Search for specific IPs, status codes, or paths using the filter bar.
+
+Logs are retained for 30 days. To export logs for longer-term storage or analysis, click **Export Logs** on the Logs tab to download a gzip-compressed NDJSON file covering the selected time range.

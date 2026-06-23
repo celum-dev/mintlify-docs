@@ -1,0 +1,285 @@
+---
+title: "VirtCloud API Authentication: Bearer Tokens and API Keys"
+sidebarTitle: "Authentication"
+description: "VirtCloud API uses Bearer token authentication with API keys. Learn how to generate your API key, pass it in requests, and handle authentication errors."
+---
+
+The VirtCloud API authenticates every request using API keys passed as Bearer tokens in the `Authorization` header. There are no session cookies, no OAuth flows, and no per-request signing — just a single header on every call. You manage your keys in the dashboard and can scope them to specific resources and permission levels, so you have precise control over what each integration is allowed to do.
+
+## API Key Format
+
+VirtCloud issues two types of API keys, distinguished by their prefix:
+
+| Prefix | Environment | Description |
+|--------|-------------|-------------|
+| `vc_live_` | Production | Operates on real infrastructure and incurs charges |
+| `vc_test_` | Sandbox | Connects to an isolated test environment — no real resources, no charges |
+
+Always confirm you are using the right key type for your context. Sending a production key from an automated test suite risks modifying live infrastructure.
+
+## Generating an API Key
+
+<Steps>
+  <Step title="Open API Keys settings">
+    Log in to the VirtCloud dashboard and navigate to **Settings → API Keys**.
+  </Step>
+  <Step title="Create a new key">
+    Click **New API Key**. Give it a descriptive name that identifies the integration — for example, `production-deployment` or `ci-pipeline-readonly`.
+  </Step>
+  <Step title="Choose a scope">
+    Select the permissions the key should have. You can restrict it to read-only access or limit it to specific resource types:
+    - **all** — full access to all resources
+    - **vms** — virtual machines only
+    - **networks** — networks and firewall rules only
+    - **storage** — storage volumes only
+    - **read-only** — GET requests across all resources, no mutations
+
+    Choose the narrowest scope that satisfies your use case.
+  </Step>
+  <Step title="Copy the key immediately">
+    After clicking **Create**, your new API key is displayed exactly once. Copy it now and store it in a secure location such as a secrets manager or your CI/CD platform's encrypted environment variables.
+  </Step>
+</Steps>
+
+<Note>
+  VirtCloud does not store the secret portion of your API key after creation. If you lose it, you must revoke it and generate a new one — there is no way to retrieve it from the dashboard later.
+</Note>
+
+## Passing the API Key
+
+Include your API key in the `Authorization` header of every request as a Bearer token:
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/virtual-machines \
+  -H "Authorization: Bearer vc_live_abc123xyz456"
+```
+
+```python Python
+import requests
+
+response = requests.get(
+    "https://api.virtcloud.io/v1/virtual-machines",
+    headers={
+        "Authorization": "Bearer vc_live_abc123xyz456",
+    },
+)
+print(response.json())
+```
+
+```javascript Node.js
+const response = await fetch("https://api.virtcloud.io/v1/virtual-machines", {
+  headers: {
+    Authorization: "Bearer vc_live_abc123xyz456",
+  },
+});
+const data = await response.json();
+console.log(data);
+```
+
+```go Go
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "io"
+)
+
+func main() {
+    req, _ := http.NewRequest("GET", "https://api.virtcloud.io/v1/virtual-machines", nil)
+    req.Header.Set("Authorization", "Bearer vc_live_abc123xyz456")
+
+    client := &http.Client{}
+    resp, _ := client.Do(req)
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+    fmt.Println(string(body))
+}
+```
+</CodeGroup>
+
+## Key Security Best Practices
+
+<Warning>
+  Never hardcode an API key directly in source code, configuration files, or anywhere that might be committed to version control. Exposed keys should be revoked immediately via the dashboard.
+</Warning>
+
+Store your API key as an environment variable and reference it at runtime:
+
+<CodeGroup>
+```bash Shell
+# Set your key as an environment variable
+export VIRTCLOUD_API_KEY=vc_live_abc123xyz456
+
+# Reference it in requests — no hardcoded secret
+curl https://api.virtcloud.io/v1/virtual-machines \
+  -H "Authorization: Bearer $VIRTCLOUD_API_KEY"
+```
+
+```python Python
+import os
+import requests
+
+api_key = os.environ["VIRTCLOUD_API_KEY"]
+
+response = requests.get(
+    "https://api.virtcloud.io/v1/virtual-machines",
+    headers={"Authorization": f"Bearer {api_key}"},
+)
+```
+
+```javascript Node.js
+const apiKey = process.env.VIRTCLOUD_API_KEY;
+
+const response = await fetch("https://api.virtcloud.io/v1/virtual-machines", {
+  headers: {
+    Authorization: `Bearer ${apiKey}`,
+  },
+});
+```
+</CodeGroup>
+
+Additional recommendations:
+
+- **Use scoped keys for automation** — grant only the permissions each integration actually needs.
+- **Rotate keys regularly** — revoke and replace long-lived keys on a schedule (e.g., quarterly) or whenever team members with access depart.
+- **Use separate keys per environment** — do not share a single key between your staging pipeline and production deployments.
+- **Audit key usage** — review the API Keys list periodically and revoke any keys that are no longer in active use.
+
+## Sandbox vs. Production
+
+| | Sandbox (`vc_test_`) | Production (`vc_live_`) |
+|-|---------------------|------------------------|
+| Infrastructure | Isolated test environment | Real VirtCloud infrastructure |
+| Billing | No charges | Standard pricing applies |
+| Data persistence | Ephemeral — may be reset | Persistent |
+| Use case | Development and testing | Live deployments |
+
+Use sandbox keys while building and testing your integration. Switch to a production key only when you are ready to operate on real infrastructure.
+
+## Listing API Keys
+
+You can retrieve a list of all API keys associated with your account via the API. The response includes metadata but **never the secret key value itself**:
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/api-keys \
+  -H "Authorization: Bearer $VIRTCLOUD_API_KEY"
+```
+
+```json Response
+{
+  "data": [
+    {
+      "id": "key_a1b2c3d4",
+      "name": "production-deployment",
+      "scope": "all",
+      "created_at": "2024-01-15T09:30:00Z"
+    },
+    {
+      "id": "key_e5f6g7h8",
+      "name": "ci-pipeline-readonly",
+      "scope": "read-only",
+      "created_at": "2024-03-02T14:15:00Z"
+    }
+  ],
+  "meta": {
+    "page": 1,
+    "per_page": 20,
+    "total": 2,
+    "total_pages": 1
+  }
+}
+```
+</CodeGroup>
+
+## Revoking an API Key
+
+Revoke a key immediately if it is compromised, no longer needed, or you want to rotate it. Revocation takes effect instantly — any in-flight requests using that key will begin returning `401 Unauthorized`.
+
+**Via the dashboard**: Navigate to **Settings → API Keys**, locate the key, and click **Revoke**.
+
+**Via the API**:
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE https://api.virtcloud.io/v1/api-keys/key_a1b2c3d4 \
+  -H "Authorization: Bearer $VIRTCLOUD_API_KEY"
+```
+
+```python Python
+import os
+import requests
+
+api_key = os.environ["VIRTCLOUD_API_KEY"]
+key_id = "key_a1b2c3d4"
+
+response = requests.delete(
+    f"https://api.virtcloud.io/v1/api-keys/{key_id}",
+    headers={"Authorization": f"Bearer {api_key}"},
+)
+# 204 No Content on success
+```
+
+```javascript Node.js
+const apiKey = process.env.VIRTCLOUD_API_KEY;
+const keyId = "key_a1b2c3d4";
+
+const response = await fetch(
+  `https://api.virtcloud.io/v1/api-keys/${keyId}`,
+  {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${apiKey}` },
+  }
+);
+// 204 No Content on success
+```
+</CodeGroup>
+
+A successful revocation returns `204 No Content` with no response body.
+
+## Authentication Errors
+
+When authentication fails, the API responds with a structured error body alongside the appropriate HTTP status code.
+
+### 401 Unauthorized
+
+Returned when the `Authorization` header is missing, malformed, or contains a key that does not exist or has been revoked.
+
+```json
+{
+  "error": {
+    "code": "invalid_api_key",
+    "message": "The API key provided is invalid or has been revoked.",
+    "request_id": "req_xyz789"
+  }
+}
+```
+
+Common causes:
+- The `Authorization` header is absent from the request.
+- The token is not prefixed with `Bearer ` (note the trailing space).
+- The key has been revoked via the dashboard or the API.
+- You are using a sandbox key (`vc_test_`) against the production endpoint, or vice versa.
+
+### 403 Forbidden
+
+Returned when the API key is valid but its scope does not permit the requested action.
+
+```json
+{
+  "error": {
+    "code": "insufficient_permissions",
+    "message": "This API key does not have permission to perform write operations on virtual machines.",
+    "request_id": "req_abc456"
+  }
+}
+```
+
+To resolve a `403`, either use an API key with a broader scope or generate a new key with the required permissions.
+
+<Note>
+  Always include the `request_id` from the error body when contacting VirtCloud support. It lets the support team trace the exact request and diagnose the issue efficiently.
+</Note>

@@ -1,0 +1,66 @@
+---
+title: "VirtCloud Storage: Volumes, Backups, and Snapshots"
+sidebarTitle: "Overview"
+description: "VirtCloud offers persistent block storage volumes and automated backup policies to protect your data. Learn which storage option fits your workload."
+---
+
+VirtCloud gives every virtual machine a built-in boot disk and lets you attach as many additional block storage volumes as your workload requires. On top of that, automated backup policies protect your data with scheduled, retention-managed copies so you can recover from accidental deletion or corruption without manual intervention. This page explains each storage type, helps you choose the right one, and covers pricing and performance tiers.
+
+## Storage types
+
+**Boot disk**
+Every VM comes with a boot disk sized to its tier. The boot disk holds the operating system, pre-installed packages, and the VirtCloud agent. It is not detachable — it lives and dies with the VM. You cannot move it to another VM or resize it independently of the VM tier.
+
+**Block volumes**
+Block volumes are persistent disks you create, attach, and detach independently of any VM. They survive VM reboots, are unaffected when a VM is deleted (unless you explicitly delete the volume), and can be moved from one VM to another. Volumes are the right home for databases, application data, and large file sets.
+
+**Snapshots**
+A snapshot is a point-in-time copy of a volume's state. Snapshots are covered in the [VM documentation](/vms/snapshots). They are useful for capturing a known-good state before a risky change and for duplicating a volume's contents into a new volume.
+
+**Backups**
+Backups are scheduled, automated copies of a VM or volume managed by VirtCloud. You configure a schedule (hourly, daily, or weekly) and a retention period, and VirtCloud handles everything else. Backups are stored separately from the source resource, so they survive even if the original VM or volume is deleted.
+
+## When to use each
+
+| Storage type | Best for |
+|---|---|
+| Boot disk | Operating system, runtime dependencies, application binaries |
+| Block volume | Databases, user-uploaded files, large datasets, anything you want to move between VMs |
+| Snapshot | Pre-change checkpoints, duplicating volumes, one-off captures |
+| Backup | Disaster recovery, compliance retention, scheduled protection for production workloads |
+
+## Storage pricing
+
+All storage is billed per GB-month based on the provisioned size of the resource, regardless of how much space is actually used.
+
+| Storage type | Price |
+|---|---|
+| Block volumes | $0.10 / GB-month |
+| Backups | $0.05 / GB-month |
+
+Boot disk storage is included in the VM tier price. Snapshot pricing is listed on the [Snapshots](/vms/snapshots) page.
+
+## Performance tiers
+
+VirtCloud offers two SSD performance tiers for block volumes. You select a tier at volume creation time; you cannot change it after creation without creating a new volume.
+
+**Standard SSD** (default)
+Suitable for general-purpose workloads, development environments, and moderate I/O. Delivers up to **3,000 IOPS**. No extra configuration required — Standard SSD is used when no `volume_type` is specified.
+
+**High-Performance SSD**
+Designed for I/O-intensive workloads such as relational databases, analytics engines, and high-throughput object stores. Delivers up to **16,000 IOPS**. To provision a High-Performance SSD volume, include `"volume_type": "high-perf"` in your API request or select **High-Performance SSD** in the dashboard volume creation dialog.
+
+<Note>
+  High-Performance SSD volumes are billed at the same rate as Standard SSD volumes — $0.10 / GB-month. IOPS performance is included in the price.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Volumes" icon="hard-drive" href="/storage/volumes">
+    Create, attach, resize, and delete persistent block storage volumes.
+  </Card>
+  <Card title="Backups" icon="clock-rotate-left" href="/storage/backups">
+    Configure automated backup schedules and restore from any backup point.
+  </Card>
+</CardGroup>

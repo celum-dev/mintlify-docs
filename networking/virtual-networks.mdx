@@ -1,0 +1,182 @@
+---
+title: "Create and Manage Virtual Private Cloud Networks (VPCs)"
+sidebarTitle: "Virtual Networks"
+description: "Set up isolated VPCs on VirtCloud to keep your VMs on a private network. Configure subnets, attach virtual machines, and control routing."
+---
+
+A Virtual Private Cloud (VPC) gives your infrastructure a dedicated, isolated layer-3 network that no other VirtCloud customer can reach. VMs inside a VPC communicate over private IP addresses, keeping sensitive traffic—database queries, internal API calls, cache replication—off the public internet entirely. If you're building anything beyond a single throwaway server, a VPC is the foundation your architecture should start from.
+
+<Warning>
+  Plan your CIDR ranges before you create a VPC. VirtCloud does not support resizing a VPC's CIDR block after creation. Overlapping ranges also prevent VPC peering, so choose non-overlapping ranges across regions from the start (e.g., `10.0.0.0/16` for `us-east-1`, `10.1.0.0/16` for `eu-west-1`).
+</Warning>
+
+## CIDR Block Guidelines
+
+Choose a CIDR range that gives you enough room to grow without wasting address space:
+
+| Environment | Recommended CIDR | Usable Hosts |
+|---|---|---|
+| Production (large) | `/16` | ~65,000 |
+| Production (medium) | `/20` | ~4,000 |
+| Staging / small envs | `/24` | ~250 |
+| Single-service test | `/28` | 14 |
+
+Reserve distinct ranges for each region so you can peer VPCs without conflicts later.
+
+## Creating a VPC
+
+<Steps>
+  <Step title="Open the Networks page">
+    In the VirtCloud dashboard, select **Networking** from the left sidebar, then click **Virtual Networks**.
+  </Step>
+  <Step title="Click Create Network">
+    Click the **Create Network** button in the top-right corner.
+  </Step>
+  <Step title="Fill in the network details">
+    Enter a **Name** (e.g., `prod-network`), select a **Region**, and specify a **CIDR block** (e.g., `10.0.0.0/16`). Optionally add a description.
+  </Step>
+  <Step title="Create subnets">
+    Add one or more subnets by clicking **Add Subnet**. Give each subnet a name and a CIDR range that falls within the VPC's range (e.g., `10.0.1.0/24` for a web tier).
+  </Step>
+  <Step title="Click Create">
+    Review your settings and click **Create Network**. The VPC is provisioned within a few seconds and appears in the **Virtual Networks** list with a status of `active`.
+  </Step>
+</Steps>
+
+You can also create a VPC directly through the API:
+
+<CodeGroup>
+```bash Create VPC
+curl -X POST https://api.virtcloud.io/v1/networks \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "prod-network",
+    "region": "us-east-1",
+    "cidr": "10.0.0.0/16"
+  }'
+```
+
+```json Response
+{
+  "id": "net_7k2mxp9q",
+  "name": "prod-network",
+  "region": "us-east-1",
+  "cidr": "10.0.0.0/16",
+  "status": "active",
+  "created_at": "2024-11-14T10:22:31Z"
+}
+```
+</CodeGroup>
+
+## Attaching VMs to a VPC
+
+### At VM Creation
+
+Pass the `vpc_id` and a `subnet_id` in the VM creation request. The VM is assigned a private IP from the subnet's CIDR range automatically:
+
+```bash
+curl -X POST https://api.virtcloud.io/v1/virtual-machines \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "web-1",
+    "region": "us-east-1",
+    "size": "standard-2vcpu-4gb",
+    "image": "ubuntu-22.04",
+    "vpc_id": "net_7k2mxp9q",
+    "subnet_id": "subnet_3hj9w1rn"
+  }'
+```
+
+### For an Existing VM
+
+Attach a running VM to a VPC with the `/attach` endpoint. This assigns a new private IP to the VM without affecting its existing public IP:
+
+```bash
+curl -X POST https://api.virtcloud.io/v1/networks/net_7k2mxp9q/attach \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "virtual_machine_id": "vm_abc123"
+  }'
+```
+
+## Listing VPCs
+
+Retrieve all VPCs in your account with a single `GET` request:
+
+<CodeGroup>
+```bash List VPCs
+curl -X GET https://api.virtcloud.io/v1/networks \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+```json Response
+{
+  "networks": [
+    {
+      "id": "net_7k2mxp9q",
+      "name": "prod-network",
+      "region": "us-east-1",
+      "cidr": "10.0.0.0/16",
+      "status": "active",
+      "vm_count": 4,
+      "created_at": "2024-11-14T10:22:31Z"
+    },
+    {
+      "id": "net_2p5lqr8v",
+      "name": "staging-network",
+      "region": "us-east-1",
+      "cidr": "10.1.0.0/24",
+      "status": "active",
+      "vm_count": 1,
+      "created_at": "2024-11-20T08:05:14Z"
+    }
+  ]
+}
+```
+</CodeGroup>
+
+## Private DNS
+
+VMs in the same VPC automatically receive a private DNS hostname in the `.internal` zone. You can reach any VM by name without hardcoding IP addresses:
+
+```text
+vm-name.internal
+```
+
+For example, a VM named `db-primary` is reachable at `db-primary.internal` from any other VM in the same VPC. This hostname resolves to the VM's private IP and is only accessible within the VPC.
+
+<Tip>
+  Use `.internal` hostnames in your application configuration files instead of private IPs. If you replace a VM, the new VM inherits the same hostname, so your configuration doesn't need to change.
+</Tip>
+
+## VPC Peering
+
+VPC peering lets two VPCs route traffic to each other using private IP addresses, even if they are in different regions. This is useful for cross-environment access (e.g., a staging VPC that can reach a shared services VPC) or multi-region architectures.
+
+VPC peering is currently available on request. Contact [VirtCloud Support](mailto:support@virtcloud.io) to enable peering between two VPCs. Peered VPCs must have non-overlapping CIDR ranges.
+
+## Deleting a VPC
+
+<Warning>
+  Detach all VMs from a VPC before deleting it. Attempting to delete a VPC with attached VMs returns a `409 Conflict` error. Detached VMs lose their private IPs but retain their public IPs.
+</Warning>
+
+<CodeGroup>
+```bash Delete VPC
+curl -X DELETE https://api.virtcloud.io/v1/networks/net_7k2mxp9q \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+```json Response
+{
+  "id": "net_7k2mxp9q",
+  "status": "deleted",
+  "deleted_at": "2024-11-30T14:10:07Z"
+}
+```
+</CodeGroup>
+
+You can also delete a VPC from the dashboard by navigating to **Networking → Virtual Networks**, selecting the network, and clicking **Delete Network** in the settings panel.

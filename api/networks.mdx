@@ -1,0 +1,885 @@
+---
+title: "REST API Reference: Networks and Firewalls Endpoints"
+sidebarTitle: "Networks"
+description: "API reference for VirtCloud networking: create and manage VPCs, firewall rule sets, and load balancers. Full request and response examples included."
+---
+
+VirtCloud's networking API lets you define isolated virtual networks (VPCs), control traffic with firewall rule sets, and distribute inbound traffic across pools of virtual machines with load balancers. All endpoints are authenticated with a Bearer token and served from `https://api.virtcloud.io/v1`.
+
+---
+
+## VPCs
+
+A VPC (Virtual Private Cloud) is an isolated Layer 3 network within a single region. Virtual machines you attach to a VPC can communicate over private IP addresses without leaving the VirtCloud backbone.
+
+### List VPCs
+
+**`GET /networks`** — Returns `200 OK`
+
+<ParamField query="region" type="string">
+  Filter VPCs to a specific region slug.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/networks \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": [
+    {
+      "id": "vpc_x9y8z7",
+      "name": "production-vpc",
+      "region": "us-east-1",
+      "cidr": "10.0.0.0/16",
+      "created_at": "2024-01-10T08:00:00Z"
+    }
+  ],
+  "meta": { "page": 1, "per_page": 20, "total": 1, "total_pages": 1 }
+}
+```
+
+<ResponseField name="data" type="array">
+  Array of VPC objects.
+
+  <Expandable title="VPC object fields">
+    <ResponseField name="id" type="string">Unique identifier, prefixed with `vpc_`.</ResponseField>
+    <ResponseField name="name" type="string">Human-readable VPC name.</ResponseField>
+    <ResponseField name="region" type="string">Region slug where the VPC resides.</ResponseField>
+    <ResponseField name="cidr" type="string">CIDR block allocated to the VPC, for example `10.0.0.0/16`.</ResponseField>
+    <ResponseField name="created_at" type="string">ISO 8601 creation timestamp.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+### Create a VPC
+
+**`POST /networks`** — Returns `201 Created`
+
+<ParamField body="name" type="string" required>
+  A unique name for the VPC within your account.
+</ParamField>
+
+<ParamField body="region" type="string" required>
+  Region slug where the VPC will be created, for example `us-east-1`.
+</ParamField>
+
+<ParamField body="cidr" type="string" required>
+  An RFC 1918 CIDR block to allocate to the VPC, for example `10.0.0.0/16`. Must not overlap with existing VPCs in the same region.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/networks \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "production-vpc",
+    "region": "us-east-1",
+    "cidr": "10.0.0.0/16"
+  }'
+```
+</CodeGroup>
+
+```json Response (201 Created)
+{
+  "data": {
+    "id": "vpc_x9y8z7",
+    "name": "production-vpc",
+    "region": "us-east-1",
+    "cidr": "10.0.0.0/16",
+    "created_at": "2024-01-10T08:00:00Z"
+  }
+}
+```
+
+---
+
+### Get a VPC
+
+**`GET /networks/{id}`** — Returns `200 OK`
+
+<ParamField path="id" type="string" required>
+  The ID of the VPC to retrieve.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/networks/vpc_x9y8z7 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "vpc_x9y8z7",
+    "name": "production-vpc",
+    "region": "us-east-1",
+    "cidr": "10.0.0.0/16",
+    "virtual_machine_ids": ["vm_a1b2c3d4", "vm_e5f6g7h8"],
+    "created_at": "2024-01-10T08:00:00Z"
+  }
+}
+```
+
+---
+
+### Delete a VPC
+
+**`DELETE /networks/{id}`** — Returns `204 No Content`
+
+Deletes a VPC. All virtual machines must be detached before the VPC can be deleted.
+
+<ParamField path="id" type="string" required>
+  The ID of the VPC to delete.
+</ParamField>
+
+<Warning>
+  You cannot delete a VPC that still has virtual machines attached. Detach all VMs using `POST /networks/{id}/detach` before issuing the delete request, or the API returns a `409 Conflict` error.
+</Warning>
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE https://api.virtcloud.io/v1/networks/vpc_x9y8z7 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+A successful request returns `204 No Content` with no response body.
+
+---
+
+### Attach a VM to a VPC
+
+**`POST /networks/{id}/attach`** — Returns `200 OK`
+
+Connects an existing virtual machine to a VPC. The VM is assigned a private IP address from the VPC's CIDR block.
+
+<ParamField path="id" type="string" required>
+  The ID of the VPC.
+</ParamField>
+
+<ParamField body="virtual_machine_id" type="string" required>
+  The ID of the virtual machine to attach.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/networks/vpc_x9y8z7/attach \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"virtual_machine_id": "vm_a1b2c3d4"}'
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "vpc_x9y8z7",
+    "name": "production-vpc",
+    "region": "us-east-1",
+    "cidr": "10.0.0.0/16",
+    "virtual_machine_ids": ["vm_a1b2c3d4"],
+    "created_at": "2024-01-10T08:00:00Z"
+  }
+}
+```
+
+---
+
+### Detach a VM from a VPC
+
+**`POST /networks/{id}/detach`** — Returns `200 OK`
+
+Removes a virtual machine from a VPC. The VM loses its private IP address in that VPC.
+
+<ParamField path="id" type="string" required>
+  The ID of the VPC.
+</ParamField>
+
+<ParamField body="virtual_machine_id" type="string" required>
+  The ID of the virtual machine to detach.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/networks/vpc_x9y8z7/detach \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"virtual_machine_id": "vm_a1b2c3d4"}'
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "vpc_x9y8z7",
+    "name": "production-vpc",
+    "region": "us-east-1",
+    "cidr": "10.0.0.0/16",
+    "virtual_machine_ids": [],
+    "created_at": "2024-01-10T08:00:00Z"
+  }
+}
+```
+
+---
+
+## Firewalls
+
+A firewall is a named set of inbound and outbound rules that you attach to one or more virtual machines. Rules are evaluated in order; unmatched traffic is denied by default.
+
+### List firewalls
+
+**`GET /firewalls`** — Returns `200 OK`
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/firewalls \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": [
+    {
+      "id": "fw_p1q2r3s4",
+      "name": "web-tier-firewall",
+      "inbound_rules": [
+        { "protocol": "tcp", "ports": "80", "sources": ["0.0.0.0/0"] },
+        { "protocol": "tcp", "ports": "443", "sources": ["0.0.0.0/0"] },
+        { "protocol": "tcp", "ports": "22", "sources": ["203.0.113.0/24"] }
+      ],
+      "outbound_rules": [
+        { "protocol": "tcp", "ports": "all", "destinations": ["0.0.0.0/0"] }
+      ],
+      "virtual_machine_ids": ["vm_a1b2c3d4"],
+      "created_at": "2024-01-11T09:00:00Z"
+    }
+  ],
+  "meta": { "page": 1, "per_page": 20, "total": 1, "total_pages": 1 }
+}
+```
+
+---
+
+### Create a firewall
+
+**`POST /firewalls`** — Returns `201 Created`
+
+<ParamField body="name" type="string" required>
+  A descriptive name for the firewall rule set.
+</ParamField>
+
+<ParamField body="inbound_rules" type="array" required>
+  List of inbound traffic rules. Each rule object must include `protocol`, `ports`, and `sources`.
+
+  <Expandable title="inbound_rules rule object">
+    <ParamField body="protocol" type="string" required>
+      IP protocol: `tcp`, `udp`, or `icmp`.
+    </ParamField>
+    <ParamField body="ports" type="string" required>
+      Port number, range (`80-443`), or `all`. Not applicable for `icmp`.
+    </ParamField>
+    <ParamField body="sources" type="array" required>
+      CIDR blocks or VPC IDs from which inbound traffic is allowed.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="outbound_rules" type="array" required>
+  List of outbound traffic rules. Each rule object must include `protocol`, `ports`, and `destinations`.
+
+  <Expandable title="outbound_rules rule object">
+    <ParamField body="protocol" type="string" required>
+      IP protocol: `tcp`, `udp`, or `icmp`.
+    </ParamField>
+    <ParamField body="ports" type="string" required>
+      Port number, range, or `all`.
+    </ParamField>
+    <ParamField body="destinations" type="array" required>
+      CIDR blocks or VPC IDs to which outbound traffic is permitted.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/firewalls \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "web-tier-firewall",
+    "inbound_rules": [
+      { "protocol": "tcp", "ports": "80", "sources": ["0.0.0.0/0"] },
+      { "protocol": "tcp", "ports": "443", "sources": ["0.0.0.0/0"] },
+      { "protocol": "tcp", "ports": "22", "sources": ["203.0.113.0/24"] }
+    ],
+    "outbound_rules": [
+      { "protocol": "tcp", "ports": "all", "destinations": ["0.0.0.0/0"] }
+    ]
+  }'
+```
+</CodeGroup>
+
+```json Response (201 Created)
+{
+  "data": {
+    "id": "fw_p1q2r3s4",
+    "name": "web-tier-firewall",
+    "inbound_rules": [
+      { "protocol": "tcp", "ports": "80", "sources": ["0.0.0.0/0"] },
+      { "protocol": "tcp", "ports": "443", "sources": ["0.0.0.0/0"] },
+      { "protocol": "tcp", "ports": "22", "sources": ["203.0.113.0/24"] }
+    ],
+    "outbound_rules": [
+      { "protocol": "tcp", "ports": "all", "destinations": ["0.0.0.0/0"] }
+    ],
+    "virtual_machine_ids": [],
+    "created_at": "2024-01-11T09:00:00Z"
+  }
+}
+```
+
+---
+
+### Get a firewall
+
+**`GET /firewalls/{id}`** — Returns `200 OK`
+
+<ParamField path="id" type="string" required>
+  The ID of the firewall to retrieve.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/firewalls/fw_p1q2r3s4 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "fw_p1q2r3s4",
+    "name": "web-tier-firewall",
+    "inbound_rules": [
+      { "protocol": "tcp", "ports": "80", "sources": ["0.0.0.0/0"] },
+      { "protocol": "tcp", "ports": "443", "sources": ["0.0.0.0/0"] },
+      { "protocol": "tcp", "ports": "22", "sources": ["203.0.113.0/24"] }
+    ],
+    "outbound_rules": [
+      { "protocol": "tcp", "ports": "all", "destinations": ["0.0.0.0/0"] }
+    ],
+    "virtual_machine_ids": ["vm_a1b2c3d4"],
+    "created_at": "2024-01-11T09:00:00Z"
+  }
+}
+```
+
+---
+
+### Update firewall rules
+
+**`PATCH /firewalls/{id}`** — Returns `200 OK`
+
+Replaces the firewall's entire rule set with the provided arrays. Any rules not included in the request are removed.
+
+<ParamField path="id" type="string" required>
+  The ID of the firewall to update.
+</ParamField>
+
+<ParamField body="name" type="string">
+  New name for the firewall.
+</ParamField>
+
+<ParamField body="inbound_rules" type="array">
+  Complete replacement list of inbound rules. Omit to leave inbound rules unchanged.
+</ParamField>
+
+<ParamField body="outbound_rules" type="array">
+  Complete replacement list of outbound rules. Omit to leave outbound rules unchanged.
+</ParamField>
+
+<Note>
+  This endpoint performs a full replacement of whichever rule arrays you supply, not a merge. If you send a new `inbound_rules` array, all previously existing inbound rules are replaced. Retrieve the existing rules first and include them in your request if you want to add or remove individual rules.
+</Note>
+
+<CodeGroup>
+```bash cURL
+curl -X PATCH https://api.virtcloud.io/v1/firewalls/fw_p1q2r3s4 \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "inbound_rules": [
+      { "protocol": "tcp", "ports": "80", "sources": ["0.0.0.0/0"] },
+      { "protocol": "tcp", "ports": "443", "sources": ["0.0.0.0/0"] },
+      { "protocol": "tcp", "ports": "22", "sources": ["10.0.0.0/8"] }
+    ]
+  }'
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "fw_p1q2r3s4",
+    "name": "web-tier-firewall",
+    "inbound_rules": [
+      { "protocol": "tcp", "ports": "80", "sources": ["0.0.0.0/0"] },
+      { "protocol": "tcp", "ports": "443", "sources": ["0.0.0.0/0"] },
+      { "protocol": "tcp", "ports": "22", "sources": ["10.0.0.0/8"] }
+    ],
+    "outbound_rules": [
+      { "protocol": "tcp", "ports": "all", "destinations": ["0.0.0.0/0"] }
+    ],
+    "virtual_machine_ids": ["vm_a1b2c3d4"],
+    "created_at": "2024-01-11T09:00:00Z"
+  }
+}
+```
+
+---
+
+### Delete a firewall
+
+**`DELETE /firewalls/{id}`** — Returns `204 No Content`
+
+Deletes a firewall rule set and detaches it from any associated virtual machines.
+
+<ParamField path="id" type="string" required>
+  The ID of the firewall to delete.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE https://api.virtcloud.io/v1/firewalls/fw_p1q2r3s4 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+A successful request returns `204 No Content` with no response body.
+
+---
+
+### Attach a firewall to a VM
+
+**`POST /firewalls/{id}/attach`** — Returns `200 OK`
+
+Associates a firewall rule set with a virtual machine. The rules become active immediately.
+
+<ParamField path="id" type="string" required>
+  The ID of the firewall.
+</ParamField>
+
+<ParamField body="virtual_machine_id" type="string" required>
+  The ID of the virtual machine to attach the firewall to.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/firewalls/fw_p1q2r3s4/attach \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"virtual_machine_id": "vm_a1b2c3d4"}'
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "fw_p1q2r3s4",
+    "name": "web-tier-firewall",
+    "virtual_machine_ids": ["vm_a1b2c3d4"],
+    "created_at": "2024-01-11T09:00:00Z"
+  }
+}
+```
+
+---
+
+### Detach a firewall from a VM
+
+**`POST /firewalls/{id}/detach`** — Returns `200 OK`
+
+Removes a firewall rule set from a virtual machine. Traffic is no longer filtered by these rules on that VM.
+
+<ParamField path="id" type="string" required>
+  The ID of the firewall.
+</ParamField>
+
+<ParamField body="virtual_machine_id" type="string" required>
+  The ID of the virtual machine to detach the firewall from.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/firewalls/fw_p1q2r3s4/detach \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"virtual_machine_id": "vm_a1b2c3d4"}'
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "fw_p1q2r3s4",
+    "name": "web-tier-firewall",
+    "virtual_machine_ids": [],
+    "created_at": "2024-01-11T09:00:00Z"
+  }
+}
+```
+
+---
+
+## Load Balancers
+
+A load balancer accepts incoming connections on a given port and distributes them across a pool of virtual machines using the algorithm you specify.
+
+### List load balancers
+
+**`GET /load-balancers`** — Returns `200 OK`
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/load-balancers \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": [
+    {
+      "id": "lb_m1n2o3p4",
+      "name": "web-lb",
+      "region": "us-east-1",
+      "protocol": "http",
+      "port": 80,
+      "forwarding_port": 8080,
+      "algorithm": "round_robin",
+      "public_ip": "203.0.113.50",
+      "virtual_machine_ids": ["vm_a1b2c3d4", "vm_e5f6g7h8"],
+      "health_check": {
+        "protocol": "http",
+        "port": 8080,
+        "path": "/healthz",
+        "interval_seconds": 10,
+        "timeout_seconds": 5,
+        "healthy_threshold": 2,
+        "unhealthy_threshold": 3
+      },
+      "created_at": "2024-01-12T11:00:00Z"
+    }
+  ],
+  "meta": { "page": 1, "per_page": 20, "total": 1, "total_pages": 1 }
+}
+```
+
+---
+
+### Create a load balancer
+
+**`POST /load-balancers`** — Returns `201 Created`
+
+<ParamField body="name" type="string" required>
+  A unique name for the load balancer.
+</ParamField>
+
+<ParamField body="region" type="string" required>
+  Region where the load balancer will be provisioned. All target VMs must be in the same region.
+</ParamField>
+
+<ParamField body="protocol" type="string" required>
+  Listening protocol: `http`, `https`, or `tcp`.
+</ParamField>
+
+<ParamField body="port" type="integer" required>
+  The port on which the load balancer listens for inbound connections.
+</ParamField>
+
+<ParamField body="forwarding_port" type="integer" required>
+  The port on each backend VM that the load balancer forwards traffic to.
+</ParamField>
+
+<ParamField body="algorithm" type="string" required>
+  Load balancing algorithm: `round_robin`, `least_connections`, or `ip_hash`.
+</ParamField>
+
+<ParamField body="virtual_machine_ids" type="array" required>
+  List of VM IDs to include in the initial backend pool.
+</ParamField>
+
+<ParamField body="health_check" type="object" required>
+  Health check configuration for the backend pool.
+
+  <Expandable title="health_check fields">
+    <ParamField body="protocol" type="string" required>
+      Protocol for health checks: `http`, `https`, or `tcp`.
+    </ParamField>
+    <ParamField body="port" type="integer" required>
+      Port to probe on each backend VM.
+    </ParamField>
+    <ParamField body="path" type="string">
+      HTTP path to request. Required when `protocol` is `http` or `https`. For example `/healthz`.
+    </ParamField>
+    <ParamField body="interval_seconds" type="integer" default="10">
+      Seconds between successive health check probes.
+    </ParamField>
+    <ParamField body="timeout_seconds" type="integer" default="5">
+      Seconds to wait for a probe response before considering it failed.
+    </ParamField>
+    <ParamField body="healthy_threshold" type="integer" default="2">
+      Number of consecutive successful probes before a VM is marked healthy.
+    </ParamField>
+    <ParamField body="unhealthy_threshold" type="integer" default="3">
+      Number of consecutive failed probes before a VM is removed from rotation.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/load-balancers \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "web-lb",
+    "region": "us-east-1",
+    "protocol": "http",
+    "port": 80,
+    "forwarding_port": 8080,
+    "algorithm": "round_robin",
+    "virtual_machine_ids": ["vm_a1b2c3d4", "vm_e5f6g7h8"],
+    "health_check": {
+      "protocol": "http",
+      "port": 8080,
+      "path": "/healthz",
+      "interval_seconds": 10,
+      "timeout_seconds": 5,
+      "healthy_threshold": 2,
+      "unhealthy_threshold": 3
+    }
+  }'
+```
+</CodeGroup>
+
+```json Response (201 Created)
+{
+  "data": {
+    "id": "lb_m1n2o3p4",
+    "name": "web-lb",
+    "region": "us-east-1",
+    "protocol": "http",
+    "port": 80,
+    "forwarding_port": 8080,
+    "algorithm": "round_robin",
+    "public_ip": "203.0.113.50",
+    "virtual_machine_ids": ["vm_a1b2c3d4", "vm_e5f6g7h8"],
+    "health_check": {
+      "protocol": "http",
+      "port": 8080,
+      "path": "/healthz",
+      "interval_seconds": 10,
+      "timeout_seconds": 5,
+      "healthy_threshold": 2,
+      "unhealthy_threshold": 3
+    },
+    "created_at": "2024-01-12T11:00:00Z"
+  }
+}
+```
+
+---
+
+### Get a load balancer
+
+**`GET /load-balancers/{id}`** — Returns `200 OK`
+
+<ParamField path="id" type="string" required>
+  The ID of the load balancer to retrieve.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/load-balancers/lb_m1n2o3p4 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "lb_m1n2o3p4",
+    "name": "web-lb",
+    "region": "us-east-1",
+    "protocol": "http",
+    "port": 80,
+    "forwarding_port": 8080,
+    "algorithm": "round_robin",
+    "public_ip": "203.0.113.50",
+    "virtual_machine_ids": ["vm_a1b2c3d4", "vm_e5f6g7h8"],
+    "health_check": {
+      "protocol": "http",
+      "port": 8080,
+      "path": "/healthz",
+      "interval_seconds": 10,
+      "timeout_seconds": 5,
+      "healthy_threshold": 2,
+      "unhealthy_threshold": 3
+    },
+    "created_at": "2024-01-12T11:00:00Z"
+  }
+}
+```
+
+---
+
+### Update a load balancer
+
+**`PATCH /load-balancers/{id}`** — Returns `200 OK`
+
+Updates the configuration of an existing load balancer. Changes take effect immediately.
+
+<ParamField path="id" type="string" required>
+  The ID of the load balancer to update.
+</ParamField>
+
+<ParamField body="name" type="string">
+  New name for the load balancer.
+</ParamField>
+
+<ParamField body="algorithm" type="string">
+  New load balancing algorithm: `round_robin`, `least_connections`, or `ip_hash`.
+</ParamField>
+
+<ParamField body="health_check" type="object">
+  Replacement health check configuration. All existing health check fields are overwritten.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X PATCH https://api.virtcloud.io/v1/load-balancers/lb_m1n2o3p4 \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"algorithm": "least_connections"}'
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "lb_m1n2o3p4",
+    "name": "web-lb",
+    "region": "us-east-1",
+    "protocol": "http",
+    "port": 80,
+    "forwarding_port": 8080,
+    "algorithm": "least_connections",
+    "public_ip": "203.0.113.50",
+    "virtual_machine_ids": ["vm_a1b2c3d4", "vm_e5f6g7h8"],
+    "created_at": "2024-01-12T11:00:00Z"
+  }
+}
+```
+
+---
+
+### Delete a load balancer
+
+**`DELETE /load-balancers/{id}`** — Returns `204 No Content`
+
+Permanently deletes a load balancer and releases its public IP address. Backend VMs are not affected.
+
+<ParamField path="id" type="string" required>
+  The ID of the load balancer to delete.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE https://api.virtcloud.io/v1/load-balancers/lb_m1n2o3p4 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+A successful request returns `204 No Content` with no response body.
+
+---
+
+### Add a VM to a load balancer
+
+**`POST /load-balancers/{id}/add-vm`** — Returns `200 OK`
+
+Adds a single virtual machine to the load balancer's backend pool. The VM begins receiving traffic once it passes the health check.
+
+<ParamField path="id" type="string" required>
+  The ID of the load balancer.
+</ParamField>
+
+<ParamField body="virtual_machine_id" type="string" required>
+  The ID of the virtual machine to add. The VM must be in the same region as the load balancer.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/load-balancers/lb_m1n2o3p4/add-vm \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"virtual_machine_id": "vm_i9j0k1l2"}'
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "lb_m1n2o3p4",
+    "name": "web-lb",
+    "virtual_machine_ids": ["vm_a1b2c3d4", "vm_e5f6g7h8", "vm_i9j0k1l2"],
+    "created_at": "2024-01-12T11:00:00Z"
+  }
+}
+```
+
+---
+
+### Remove a VM from a load balancer
+
+**`POST /load-balancers/{id}/remove-vm`** — Returns `200 OK`
+
+Removes a virtual machine from the load balancer's backend pool. In-flight connections to that VM are allowed to complete before traffic is drained.
+
+<ParamField path="id" type="string" required>
+  The ID of the load balancer.
+</ParamField>
+
+<ParamField body="virtual_machine_id" type="string" required>
+  The ID of the virtual machine to remove from the pool.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/load-balancers/lb_m1n2o3p4/remove-vm \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"virtual_machine_id": "vm_e5f6g7h8"}'
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "lb_m1n2o3p4",
+    "name": "web-lb",
+    "virtual_machine_ids": ["vm_a1b2c3d4", "vm_i9j0k1l2"],
+    "created_at": "2024-01-12T11:00:00Z"
+  }
+}
+```

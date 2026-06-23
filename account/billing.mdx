@@ -1,0 +1,103 @@
+---
+title: "VirtCloud Billing, Usage Tracking, and Payment Methods"
+sidebarTitle: "Billing"
+description: "Understand VirtCloud's hourly billing model, view resource usage, add payment methods, and set spending alerts to manage your cloud costs."
+---
+
+VirtCloud bills you for the resources you use, measured in hours. There are no upfront commitments or monthly minimums — your invoice reflects exactly what you provisioned during the billing period. Understanding how each resource type accrues charges helps you avoid surprise costs and keep your spending predictable.
+
+## Billing model
+
+Resources are billed per hour, starting from the moment they are created and ending when they are deleted.
+
+- **Virtual machines** are billed for every hour they exist — whether they are **running or stopped**. A stopped VM still holds its allocated CPU, memory, and IP address, so the hourly charge continues. To stop billing for a VM, you must delete it.
+- **Block storage volumes** accrue charges as long as they exist, regardless of whether they are attached to a VM.
+- **Backups** are billed based on the total stored backup size.
+- **Outbound bandwidth** is metered monthly. Your first 1 TB each month is free; usage beyond that is billed per GB.
+
+<Warning>
+  **Stopping a VM does not stop billing.** The resource remains reserved and charges continue to accumulate. To fully stop billing for a virtual machine, you must **delete** it.
+</Warning>
+
+## Pricing summary
+
+The following prices are examples and reflect on-demand rates. Current pricing is always available on the [VirtCloud Pricing page](https://virtcloud.io/pricing).
+
+| Resource | Hourly Rate | Approximate Monthly Cost |
+|---|---|---|
+| c1.small | $0.012 / hour | ~$8.76 / month |
+| c1.medium | $0.024 / hour | ~$17.52 / month |
+| c2.large | $0.048 / hour | ~$35.04 / month |
+| c2.xlarge | $0.096 / hour | ~$70.08 / month |
+| Block storage | — | $0.10 / GB / month |
+| Backups | — | $0.05 / GB / month |
+| Outbound bandwidth | — | First 1 TB free, then $0.01 / GB |
+
+<Note>
+  Monthly estimates above are based on 730 hours (a standard 30.4-day month). Actual charges depend on the number of hours each resource exists in a given billing period.
+</Note>
+
+## Viewing usage and invoices
+
+Open the **Billing** section of your dashboard to monitor spending in real time and access past invoices.
+
+- **Usage tab** — shows a live breakdown of all active resources, their hourly rates, and a running cost estimate for the current billing period. Usage data updates every few minutes.
+- **Invoices tab** — lists all past invoices. Each invoice is available as a downloadable PDF for accounting and expense purposes.
+
+Your billing period runs from the 1st to the last day of each calendar month. Invoices are generated on the 1st of the following month and charged to your default payment method automatically.
+
+## Adding a payment method
+
+<Steps>
+  <Step title="Open Billing Settings">
+    Navigate to **Settings → Billing → Payment Methods**.
+  </Step>
+  <Step title="Add a card">
+    Click **Add Card** and enter your card details. VirtCloud accepts Visa, Mastercard, and American Express.
+  </Step>
+  <Step title="Set as default">
+    If you have multiple cards, select **Set as Default** on the card you want to use for automatic monthly charges.
+  </Step>
+</Steps>
+
+VirtCloud does not store raw card numbers — payment information is tokenized and processed securely through our payment provider.
+
+## Setting spending alerts
+
+Spending alerts send you an email notification when your estimated monthly spend crosses a threshold you define. This helps you catch runaway resources before they result in a large invoice.
+
+<Steps>
+  <Step title="Open Alerts Settings">
+    Navigate to **Settings → Billing → Alerts**.
+  </Step>
+  <Step title="Set a budget">
+    Enter a monthly budget amount in dollars, then click **Save Alert**.
+  </Step>
+  <Step title="Receive notifications">
+    VirtCloud emails you when your estimated spend reaches **80%** of your budget and again when it reaches **100%**.
+  </Step>
+</Steps>
+
+<Note>
+  Spending alerts are informational — they do not automatically pause or delete resources when your budget is reached. You must take manual action to reduce usage if needed.
+</Note>
+
+## Deleting resources to stop billing
+
+To stop being charged for a resource, you must delete it — not just stop or detach it.
+
+| Action | Billing effect |
+|---|---|
+| Stop a VM | **No change** — charges continue |
+| Detach a volume | **No change** — charges continue |
+| Delete a VM | Billing stops at the end of that hour |
+| Delete a volume | Billing stops at the end of that hour |
+| Delete a backup | Billing stops at the end of that hour |
+
+<Warning>
+  Deleting a VM does **not** automatically delete attached volumes. If you provisioned volumes alongside a VM and want to stop paying for them, delete the volumes separately after deleting the VM.
+</Warning>
+
+## Disputed charges
+
+If you believe a charge on your invoice is incorrect, contact the VirtCloud billing team at [billing@virtcloud.io](mailto:billing@virtcloud.io). Include your account email, the invoice number, and a description of the discrepancy. The billing team responds within one business day.

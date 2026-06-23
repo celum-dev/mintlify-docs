@@ -1,0 +1,120 @@
+---
+title: "Quickstart: Create an Account and Launch Your First VM"
+sidebarTitle: "Quickstart"
+description: "Create your VirtCloud account, generate an API key, and launch your first virtual machine via the dashboard or REST API in under five minutes."
+---
+
+This guide walks you through everything you need to go from zero to a running virtual machine on VirtCloud. By the end you'll have an account, an API key, and a live VM you can SSH into — all in about five minutes.
+
+<Note>
+  To connect to your VM over SSH you'll need an SSH key pair on your local machine. If you don't have one yet, run `ssh-keygen -t ed25519 -C "your@email.com"` before you start, then add the public key (`~/.ssh/id_ed25519.pub`) to your VirtCloud account under **Settings → SSH Keys**.
+</Note>
+
+<Steps>
+
+  <Step title="Create your VirtCloud account">
+    Go to [app.virtcloud.io/signup](https://app.virtcloud.io/signup) and fill in your name, email address, and a strong password. VirtCloud will send a verification email to the address you provide.
+
+    Open the email and click **Verify my email** to activate your account. Once verified, you're taken directly to the VirtCloud dashboard.
+  </Step>
+
+  <Step title="Explore the dashboard">
+    The dashboard home screen gives you an at-a-glance overview of your account:
+
+    - **Virtual Machines** — a live list of all your VMs with their status, region, and IP addresses.
+    - **Usage & Billing** — current-month resource consumption and estimated cost.
+    - **Activity Feed** — a chronological log of every action taken in your account.
+
+    Take a moment to familiarise yourself with the left-hand navigation. You'll find dedicated sections for Networking, Storage, Snapshots, Firewalls, and Team Settings.
+  </Step>
+
+  <Step title="Generate an API key">
+    You'll need an API key to use the VirtCloud REST API or any third-party integration.
+
+    1. Click **Settings** in the left-hand navigation bar.
+    2. Select the **API Keys** tab.
+    3. Click **New API Key**.
+    4. Give the key a descriptive name (e.g., `local-dev` or `ci-pipeline`) and click **Create**.
+    5. Copy the key immediately — it is only shown once. Store it somewhere safe, such as a password manager or a secrets manager in your CI environment.
+
+    <Warning>
+      API keys grant full access to your VirtCloud account. Never commit an API key to version control or share it in public channels. If a key is compromised, revoke it immediately from the **API Keys** settings page.
+    </Warning>
+  </Step>
+
+  <Step title="Launch your first virtual machine">
+    You can create a VM from the dashboard UI or directly via the API. Pick whichever method suits you.
+
+    ### Option A — Dashboard
+
+    1. Click **New VM** in the top-right corner of the dashboard.
+    2. **Choose a region** — pick the data center closest to you or your users (e.g., `us-east-1`).
+    3. **Choose an OS image** — select **Ubuntu 22.04 LTS** to follow this guide.
+    4. **Choose a size** — `c1.small` (1 vCPU, 1 GB RAM, 20 GB disk) is a good starting point for testing.
+    5. **Add your SSH key** — select the key you uploaded in Settings → SSH Keys.
+    6. Give your VM a name (e.g., `my-first-vm`) and click **Create Virtual Machine**.
+
+    The VM will transition through `provisioning` → `running` in about 30 seconds. Its public IP address appears in the VM list once it's ready.
+
+    ### Option B — REST API
+
+    Replace `YOUR_API_KEY` and `ssh-key-id` with your actual values, then run:
+
+    ```bash
+    curl -X POST https://api.virtcloud.io/v1/virtual-machines \
+      -H "Authorization: Bearer YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "my-first-vm",
+        "region": "us-east-1",
+        "size": "c1.small",
+        "image": "ubuntu-22.04",
+        "ssh_key_ids": ["ssh-key-id"]
+      }'
+    ```
+
+    A successful response returns a `201 Created` status and a JSON object describing your new VM, including its `id` and (once ready) its `public_ip`. You can poll `GET /v1/virtual-machines/{id}` to check the `status` field until it reads `running`.
+
+    <Tip>
+      You can retrieve your SSH key ID from `GET /v1/ssh-keys` or from the **Settings → SSH Keys** page in the dashboard.
+    </Tip>
+  </Step>
+
+  <Step title="Connect via SSH">
+    Once the VM status shows **Running** and a public IP is assigned, open a terminal and connect:
+
+    ```bash
+    ssh -i ~/.ssh/your-key root@<vm-ip>
+    ```
+
+    Replace `~/.ssh/your-key` with the path to your private key and `<vm-ip>` with the public IP shown in the dashboard. You should land at a shell prompt inside your new Ubuntu VM.
+
+    ```text
+    Welcome to Ubuntu 22.04.4 LTS (GNU/Linux 5.15.0-112-generic x86_64)
+
+    root@my-first-vm:~#
+    ```
+
+    Your VM is live. From here you can install software, configure services, or attach additional storage — whatever your project needs.
+  </Step>
+
+</Steps>
+
+## What's Next?
+
+You've got a running VM. Here's where to go from here:
+
+<CardGroup cols={2}>
+  <Card title="Manage Virtual Machines" icon="sliders" href="/vms/manage">
+    Learn how to resize, reboot, snapshot, and delete VMs. Understand the full VM lifecycle.
+  </Card>
+  <Card title="Networking Overview" icon="network-wired" href="/networking/overview">
+    Set up VPCs, assign private IPs, configure firewall rules, and add load balancers.
+  </Card>
+  <Card title="Persistent Volumes" icon="hard-drive" href="/storage/volumes">
+    Create and attach block storage volumes that outlive any single VM.
+  </Card>
+  <Card title="API Overview" icon="code" href="/api/overview">
+    Automate everything with the VirtCloud REST API. Full reference, authentication, and examples.
+  </Card>
+</CardGroup>

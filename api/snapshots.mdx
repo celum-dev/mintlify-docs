@@ -1,0 +1,493 @@
+---
+title: "REST API Reference: Snapshots and Templates Endpoints"
+sidebarTitle: "Snapshots"
+description: "API reference for VirtCloud snapshots, VM templates, and SSH keys. Create point-in-time snapshots, promote templates, and manage account SSH keys."
+---
+
+Snapshots capture the exact disk state of a virtual machine at a point in time. You can use them to create new VMs in a known state, or promote them to reusable templates that appear as first-class boot images. This reference also covers SSH key management, which lets you store public keys in your account and inject them into virtual machines at creation time. All endpoints are authenticated with a Bearer token and use the base URL `https://api.virtcloud.io/v1`.
+
+---
+
+## Snapshots
+
+### List snapshots
+
+**`GET /snapshots`** — Returns `200 OK`
+
+Returns all snapshots in your account. Use the `virtual_machine_id` query parameter to scope results to a specific VM.
+
+<ParamField query="virtual_machine_id" type="string">
+  Filter snapshots to those taken from a specific virtual machine.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/snapshots \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+```bash cURL (filtered)
+curl "https://api.virtcloud.io/v1/snapshots?virtual_machine_id=vm_def456" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": [
+    {
+      "id": "snap_abc123",
+      "name": "pre-update-backup",
+      "virtual_machine_id": "vm_def456",
+      "status": "available",
+      "size_gb": 22,
+      "created_at": "2024-01-15T14:00:00Z"
+    }
+  ],
+  "meta": { "page": 1, "per_page": 20, "total": 1, "total_pages": 1 }
+}
+```
+
+<ResponseField name="data" type="array">
+  Array of snapshot objects.
+
+  <Expandable title="Snapshot object fields">
+    <ResponseField name="id" type="string">Unique identifier, prefixed with `snap_`.</ResponseField>
+    <ResponseField name="name" type="string">Human-readable snapshot name.</ResponseField>
+    <ResponseField name="virtual_machine_id" type="string">ID of the VM from which this snapshot was taken.</ResponseField>
+    <ResponseField name="status" type="string">Snapshot state: `pending`, `available`, or `error`.</ResponseField>
+    <ResponseField name="size_gb" type="integer">Disk space consumed by the snapshot in gigabytes.</ResponseField>
+    <ResponseField name="created_at" type="string">ISO 8601 timestamp of when the snapshot was initiated.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+### Create a snapshot
+
+**`POST /snapshots`** — Returns `202 Accepted`
+
+Initiates a snapshot of the specified virtual machine's root disk. The snapshot is taken asynchronously; poll `GET /snapshots/{id}` or listen for the `snapshot.available` webhook event to know when it is ready.
+
+<ParamField body="name" type="string" required>
+  A descriptive name for the snapshot.
+</ParamField>
+
+<ParamField body="virtual_machine_id" type="string" required>
+  The ID of the virtual machine to snapshot.
+</ParamField>
+
+<Note>
+  You can snapshot a running VM. VirtCloud uses a copy-on-write mechanism to ensure consistency, but for application-level consistency (for example, a live database), consider quiescing writes before triggering the snapshot.
+</Note>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/snapshots \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "pre-update-backup",
+    "virtual_machine_id": "vm_def456"
+  }'
+```
+</CodeGroup>
+
+```json Response (202 Accepted)
+{
+  "data": {
+    "id": "snap_abc123",
+    "name": "pre-update-backup",
+    "virtual_machine_id": "vm_def456",
+    "status": "pending",
+    "size_gb": 22,
+    "created_at": "2024-01-15T14:00:00Z"
+  }
+}
+```
+
+---
+
+### Get a snapshot
+
+**`GET /snapshots/{id}`** — Returns `200 OK`
+
+Retrieves the details of a single snapshot, including its current status.
+
+<ParamField path="id" type="string" required>
+  The ID of the snapshot to retrieve.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/snapshots/snap_abc123 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "snap_abc123",
+    "name": "pre-update-backup",
+    "virtual_machine_id": "vm_def456",
+    "status": "available",
+    "size_gb": 22,
+    "created_at": "2024-01-15T14:00:00Z"
+  }
+}
+```
+
+---
+
+### Delete a snapshot
+
+**`DELETE /snapshots/{id}`** — Returns `204 No Content`
+
+Permanently deletes a snapshot and frees the storage it occupied.
+
+<ParamField path="id" type="string" required>
+  The ID of the snapshot to delete.
+</ParamField>
+
+<Warning>
+  If a template was created from this snapshot, the template continues to exist and remains usable. However, you will no longer be able to create a new VM directly from this snapshot ID. Delete the template first if you want to remove the associated image entirely.
+</Warning>
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE https://api.virtcloud.io/v1/snapshots/snap_abc123 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+A successful request returns `204 No Content` with no response body.
+
+---
+
+## Templates
+
+Templates are account-level reusable images built from snapshots. They appear alongside VirtCloud's public OS images when creating a VM and can be shared with other users or kept private to your account.
+
+### List templates
+
+**`GET /templates`** — Returns `200 OK`
+
+Returns all templates visible to your account, including VirtCloud's public OS images and any custom templates you have created.
+
+<ParamField query="visibility" type="string">
+  Filter by visibility: `public` (VirtCloud-provided images) or `private` (custom templates in your account).
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/templates \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+```bash cURL (custom only)
+curl "https://api.virtcloud.io/v1/templates?visibility=private" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": [
+    {
+      "id": "tpl_abc123",
+      "name": "nginx-base-v1",
+      "snapshot_id": "snap_xyz789",
+      "description": "Ubuntu 22.04 with Nginx pre-installed",
+      "visibility": "private",
+      "size_gb": 22,
+      "created_at": "2024-01-15T15:00:00Z"
+    },
+    {
+      "id": "tpl_pub001",
+      "name": "ubuntu-22.04",
+      "snapshot_id": null,
+      "description": "Ubuntu 22.04 LTS (Jammy Jellyfish)",
+      "visibility": "public",
+      "size_gb": 5,
+      "created_at": "2023-06-01T00:00:00Z"
+    }
+  ],
+  "meta": { "page": 1, "per_page": 20, "total": 2, "total_pages": 1 }
+}
+```
+
+---
+
+### Create a template
+
+**`POST /templates`** — Returns `201 Created`
+
+Promotes a snapshot into a reusable template. The template can then be used as the `template_id` value when creating a new virtual machine.
+
+<ParamField body="name" type="string" required>
+  A unique name for the template. This is the slug you will reference when creating VMs.
+</ParamField>
+
+<ParamField body="snapshot_id" type="string" required>
+  The ID of the snapshot to promote. The snapshot must be in `available` status.
+</ParamField>
+
+<ParamField body="description" type="string">
+  A human-readable description of the template's contents, for example what software is pre-installed.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/templates \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "nginx-base-v1",
+    "snapshot_id": "snap_xyz789",
+    "description": "Ubuntu 22.04 with Nginx pre-installed"
+  }'
+```
+</CodeGroup>
+
+```json Response (201 Created)
+{
+  "data": {
+    "id": "tpl_abc123",
+    "name": "nginx-base-v1",
+    "snapshot_id": "snap_xyz789",
+    "description": "Ubuntu 22.04 with Nginx pre-installed",
+    "visibility": "private",
+    "size_gb": 22,
+    "created_at": "2024-01-15T15:00:00Z"
+  }
+}
+```
+
+---
+
+### Get a template
+
+**`GET /templates/{id}`** — Returns `200 OK`
+
+Retrieves the full details of a single template.
+
+<ParamField path="id" type="string" required>
+  The ID of the template to retrieve.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/templates/tpl_abc123 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "tpl_abc123",
+    "name": "nginx-base-v1",
+    "snapshot_id": "snap_xyz789",
+    "description": "Ubuntu 22.04 with Nginx pre-installed",
+    "visibility": "private",
+    "size_gb": 22,
+    "created_at": "2024-01-15T15:00:00Z"
+  }
+}
+```
+
+---
+
+### Update a template
+
+**`PATCH /templates/{id}`** — Returns `200 OK`
+
+Updates the name or description of an existing template. You cannot change the underlying snapshot after a template has been created.
+
+<ParamField path="id" type="string" required>
+  The ID of the template to update.
+</ParamField>
+
+<ParamField body="name" type="string">
+  New name for the template.
+</ParamField>
+
+<ParamField body="description" type="string">
+  New description for the template.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X PATCH https://api.virtcloud.io/v1/templates/tpl_abc123 \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "nginx-base-v2",
+    "description": "Ubuntu 22.04 with Nginx 1.24 and custom config"
+  }'
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "tpl_abc123",
+    "name": "nginx-base-v2",
+    "snapshot_id": "snap_xyz789",
+    "description": "Ubuntu 22.04 with Nginx 1.24 and custom config",
+    "visibility": "private",
+    "size_gb": 22,
+    "created_at": "2024-01-15T15:00:00Z"
+  }
+}
+```
+
+---
+
+### Delete a template
+
+**`DELETE /templates/{id}`** — Returns `204 No Content`
+
+Permanently removes a custom template from your account. The original snapshot the template was built from is not affected.
+
+<ParamField path="id" type="string" required>
+  The ID of the template to delete.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE https://api.virtcloud.io/v1/templates/tpl_abc123 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+A successful request returns `204 No Content` with no response body.
+
+---
+
+## SSH Keys
+
+SSH keys stored in your VirtCloud account can be injected into virtual machines at creation time or added to existing VMs. Only the public key is stored; VirtCloud never has access to your private key.
+
+### List SSH keys
+
+**`GET /ssh-keys`** — Returns `200 OK`
+
+Returns all SSH keys associated with your account.
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/ssh-keys \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": [
+    {
+      "id": "key_a1b2c3",
+      "name": "laptop-key",
+      "fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCD",
+      "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@laptop",
+      "created_at": "2024-01-10T08:00:00Z"
+    }
+  ],
+  "meta": { "page": 1, "per_page": 20, "total": 1, "total_pages": 1 }
+}
+```
+
+---
+
+### Add an SSH key
+
+**`POST /ssh-keys`** — Returns `201 Created`
+
+Saves a public SSH key to your account. You can then reference the returned `id` when creating virtual machines.
+
+<ParamField body="name" type="string" required>
+  A memorable name to identify this key, for example `laptop-key` or `ci-deploy-key`.
+</ParamField>
+
+<ParamField body="public_key" type="string" required>
+  The full OpenSSH-format public key string, including the algorithm prefix and optional comment. Supported algorithms: `ssh-rsa` (minimum 2048-bit), `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp384`, `ecdsa-sha2-nistp521`.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/ssh-keys \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "laptop-key",
+    "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@laptop"
+  }'
+```
+</CodeGroup>
+
+```json Response (201 Created)
+{
+  "data": {
+    "id": "key_a1b2c3",
+    "name": "laptop-key",
+    "fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCD",
+    "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@laptop",
+    "created_at": "2024-01-10T08:00:00Z"
+  }
+}
+```
+
+---
+
+### Get an SSH key
+
+**`GET /ssh-keys/{id}`** — Returns `200 OK`
+
+Retrieves the details of a single SSH key.
+
+<ParamField path="id" type="string" required>
+  The ID of the SSH key to retrieve.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl https://api.virtcloud.io/v1/ssh-keys/key_a1b2c3 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+```json Response (200 OK)
+{
+  "data": {
+    "id": "key_a1b2c3",
+    "name": "laptop-key",
+    "fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCD",
+    "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@laptop",
+    "created_at": "2024-01-10T08:00:00Z"
+  }
+}
+```
+
+---
+
+### Delete an SSH key
+
+**`DELETE /ssh-keys/{id}`** — Returns `204 No Content`
+
+Removes an SSH key from your account. This does not remove the key from any virtual machines it has already been injected into.
+
+<ParamField path="id" type="string" required>
+  The ID of the SSH key to delete.
+</ParamField>
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE https://api.virtcloud.io/v1/ssh-keys/key_a1b2c3 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+A successful request returns `204 No Content` with no response body.
+
+

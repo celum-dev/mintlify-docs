@@ -1,0 +1,289 @@
+---
+title: "VirtCloud REST API Overview: Complete Reference Guide"
+sidebarTitle: "Overview"
+description: "Learn the VirtCloud REST API fundamentals: base URL, versioning, rate limits, pagination, request format, and consistent error response structure."
+---
+
+The VirtCloud REST API gives you programmatic access to every resource on your infrastructure — virtual machines, networks, storage volumes, snapshots, and more. Every action you can take in the dashboard is also available through the API, making it straightforward to integrate VirtCloud into your deployment pipelines, infrastructure-as-code workflows, and custom tooling.
+
+## Base URL
+
+All API requests are made over HTTPS to the following base URL:
+
+```
+https://api.virtcloud.io/v1
+```
+
+<Note>
+  HTTP requests are not supported. All traffic must use HTTPS to ensure your API key and payload data remain secure in transit.
+</Note>
+
+## API Versioning
+
+The current API version is **v1**, reflected directly in the URL path. VirtCloud uses URL-based versioning so your integrations remain stable regardless of changes to HTTP clients or headers.
+
+When breaking changes are introduced, a new version (e.g., `v2`) is published alongside the existing one. Previous versions are supported for a minimum of 12 months after a new version is released, giving you time to migrate without emergency re-work.
+
+| Version | Status | Base URL |
+|---------|--------|----------|
+| v1 | Current | `https://api.virtcloud.io/v1` |
+
+## Request Format
+
+For requests that include a body — `POST`, `PUT`, and `PATCH` — you must send JSON and set the `Content-Type` header accordingly.
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/virtual-machines \
+  -H "Authorization: Bearer vc_live_abc123xyz456" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "web-server-01",
+    "region": "us-east-1",
+    "plan": "standard-2vcpu-4gb"
+  }'
+```
+
+```python Python
+import requests
+
+response = requests.post(
+    "https://api.virtcloud.io/v1/virtual-machines",
+    headers={
+        "Authorization": "Bearer vc_live_abc123xyz456",
+        "Content-Type": "application/json",
+    },
+    json={
+        "name": "web-server-01",
+        "region": "us-east-1",
+        "plan": "standard-2vcpu-4gb",
+    },
+)
+```
+
+```javascript Node.js
+const response = await fetch("https://api.virtcloud.io/v1/virtual-machines", {
+  method: "POST",
+  headers: {
+    Authorization: "Bearer vc_live_abc123xyz456",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    name: "web-server-01",
+    region: "us-east-1",
+    plan: "standard-2vcpu-4gb",
+  }),
+});
+```
+</CodeGroup>
+
+`GET` and `DELETE` requests do not require a `Content-Type` header or a request body.
+
+## HTTP Methods
+
+VirtCloud follows standard REST conventions for HTTP methods:
+
+| Method | Purpose | Example |
+|--------|---------|---------|
+| `GET` | Retrieve a resource or list of resources | Fetch VM details |
+| `POST` | Create a new resource | Provision a virtual machine |
+| `PATCH` | Partially update an existing resource | Rename a VM |
+| `PUT` | Replace an existing resource entirely | Update a firewall ruleset |
+| `DELETE` | Remove a resource | Delete a snapshot |
+
+## Rate Limits
+
+Each API key is allowed **1,000 requests per minute**. Every API response includes the following headers so you can track your current usage:
+
+| Header | Description |
+|--------|-------------|
+| `X-RateLimit-Limit` | Maximum requests allowed per minute |
+| `X-RateLimit-Remaining` | Requests remaining in the current window |
+| `X-RateLimit-Reset` | Unix timestamp when the window resets |
+
+Example rate limit headers on a response:
+
+```http
+X-RateLimit-Limit: 1000
+X-RateLimit-Remaining: 999
+X-RateLimit-Reset: 1705312800
+```
+
+When you exceed the limit, the API returns `429 Too Many Requests` and includes a `Retry-After` header indicating how many seconds to wait before retrying.
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 23
+```
+
+<Note>
+  If you consistently approach rate limits, consider batching operations, caching GET responses, or contacting support to discuss an increased quota for your account.
+</Note>
+
+## Pagination
+
+All list endpoints return paginated results. Use the `page` and `per_page` query parameters to navigate through large collections.
+
+| Parameter | Default | Maximum | Description |
+|-----------|---------|---------|-------------|
+| `page` | `1` | — | The page number to retrieve |
+| `per_page` | `20` | `100` | Number of results per page |
+
+Every paginated response wraps the result set in a `data` array and includes a `meta` object with total count information:
+
+```json
+{
+  "data": [
+    { "id": "vm_abc123", "name": "web-server-01" },
+    { "id": "vm_def456", "name": "db-primary-01" }
+  ],
+  "meta": {
+    "page": 1,
+    "per_page": 20,
+    "total": 87,
+    "total_pages": 5
+  }
+}
+```
+
+Use `meta.total_pages` to determine how many pages exist and iterate through them programmatically when you need to retrieve a full collection.
+
+## Error Responses
+
+When a request cannot be completed, the API returns an appropriate HTTP status code and a consistent JSON error body:
+
+```json
+{
+  "error": {
+    "code": "resource_not_found",
+    "message": "Virtual machine vm_abc123 not found",
+    "request_id": "req_xyz789"
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `code` | Machine-readable string identifying the error type |
+| `message` | Human-readable explanation of what went wrong |
+| `request_id` | Unique identifier for this specific request — include in support tickets |
+
+### HTTP Status Codes
+
+| Status Code | Meaning |
+|-------------|---------|
+| `200 OK` | Request succeeded |
+| `201 Created` | Resource created successfully |
+| `204 No Content` | Request succeeded with no response body (e.g., DELETE) |
+| `400 Bad Request` | Malformed request syntax or invalid JSON |
+| `401 Unauthorized` | Missing or invalid API key |
+| `403 Forbidden` | Valid API key but insufficient permissions |
+| `404 Not Found` | Resource does not exist |
+| `409 Conflict` | Request conflicts with the current state (e.g., duplicate name) |
+| `422 Unprocessable Entity` | Request is well-formed but contains invalid field values |
+| `429 Too Many Requests` | Rate limit exceeded |
+| `500 Internal Server Error` | Unexpected server-side error |
+
+### Common Error Codes
+
+| Error Code | HTTP Status | Description |
+|------------|-------------|-------------|
+| `authentication_failed` | 401 | The Authorization header is missing or malformed |
+| `invalid_api_key` | 401 | The API key does not exist or has been revoked |
+| `insufficient_permissions` | 403 | The API key lacks the required scope for this action |
+| `resource_not_found` | 404 | The requested resource does not exist |
+| `resource_conflict` | 409 | A resource with the same unique identifier already exists |
+| `invalid_parameter` | 422 | One or more request body fields failed validation |
+| `rate_limit_exceeded` | 429 | You have exceeded the rate limit for your API key |
+| `quota_exceeded` | 422 | Your account has reached a resource quota limit |
+
+## Request IDs
+
+Every response from the API — including errors — includes an `X-Request-ID` header containing a unique identifier for that request:
+
+```http
+X-Request-ID: req_xyz789
+```
+
+When contacting VirtCloud support about unexpected behavior, always include this value. It allows the support team to locate the exact request in server logs and diagnose issues quickly.
+
+## Idempotency
+
+Network failures can leave you unsure whether a `POST` request was received and processed. To safely retry resource-creation requests without risking duplicate operations, include an `Idempotency-Key` header with a unique value:
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://api.virtcloud.io/v1/virtual-machines \
+  -H "Authorization: Bearer vc_live_abc123xyz456" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: a3f5c7e2-1b4d-4f8a-9c2e-7d0b6e3f1a8c" \
+  -d '{
+    "name": "web-server-01",
+    "region": "us-east-1",
+    "plan": "standard-2vcpu-4gb"
+  }'
+```
+
+```python Python
+import uuid
+import requests
+
+response = requests.post(
+    "https://api.virtcloud.io/v1/virtual-machines",
+    headers={
+        "Authorization": "Bearer vc_live_abc123xyz456",
+        "Content-Type": "application/json",
+        "Idempotency-Key": str(uuid.uuid4()),
+    },
+    json={
+        "name": "web-server-01",
+        "region": "us-east-1",
+        "plan": "standard-2vcpu-4gb",
+    },
+)
+```
+
+```javascript Node.js
+import { randomUUID } from "crypto";
+
+const response = await fetch("https://api.virtcloud.io/v1/virtual-machines", {
+  method: "POST",
+  headers: {
+    Authorization: "Bearer vc_live_abc123xyz456",
+    "Content-Type": "application/json",
+    "Idempotency-Key": randomUUID(),
+  },
+  body: JSON.stringify({
+    name: "web-server-01",
+    region: "us-east-1",
+    plan: "standard-2vcpu-4gb",
+  }),
+});
+```
+</CodeGroup>
+
+If you send the same `Idempotency-Key` value in a subsequent request within 24 hours, the API returns the original response without creating a duplicate resource. Use a UUID or another sufficiently random value as your key.
+
+<Note>
+  Idempotency keys are scoped to your API key and expire after 24 hours. Only `POST` requests support idempotency — `PATCH`, `PUT`, and `DELETE` are naturally idempotent by design.
+</Note>
+
+## Explore the API
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/api/authentication">
+    Learn how to generate API keys, set the Authorization header, and handle authentication errors.
+  </Card>
+  <Card title="Virtual Machines" icon="server" href="/api/virtual-machines">
+    Provision, manage, resize, and delete virtual machines through the API.
+  </Card>
+  <Card title="Networks" icon="network-wired" href="/api/networks">
+    Create and configure VPCs, subnets, and firewall rules for your infrastructure.
+  </Card>
+  <Card title="Storage" icon="hard-drive" href="/api/storage">
+    Attach, detach, resize, and manage persistent block storage volumes.
+  </Card>
+  <Card title="Snapshots" icon="camera" href="/api/snapshots">
+    Capture point-in-time snapshots of virtual machines and volumes.
+  </Card>
+</CardGroup>

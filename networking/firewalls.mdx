@@ -1,0 +1,219 @@
+---
+title: "Configure Firewall Rules to Control Traffic to Your VMs"
+sidebarTitle: "Firewalls"
+description: "Create stateful firewall rule sets in VirtCloud to control inbound and outbound traffic for your virtual machines. Apply rules to individual VMs or groups."
+---
+
+VirtCloud firewalls are stateful rule sets that sit in front of your virtual machines and filter traffic before it ever reaches the VM's operating system. Because the firewall is enforced at the hypervisor level, it protects your VM even if the in-guest firewall (`iptables`, `ufw`, `nftables`) is misconfigured or disabled. You create a named firewall, define its inbound and outbound rules, then attach it to one or more VMs—giving you a reusable security policy you can apply consistently across a fleet.
+
+## Default Behavior
+
+| Direction | Default |
+|---|---|
+| **Inbound** | All traffic **blocked** unless a matching allow rule exists |
+| **Outbound** | All traffic **allowed** unless an explicit deny rule exists |
+
+A newly created VM with no firewall attached accepts no inbound traffic at all—not even ICMP ping. Attach a firewall with the rules you need before you expect the VM to be reachable.
+
+## Creating a Firewall
+
+<Steps>
+  <Step title="Navigate to Firewalls">
+    In the VirtCloud dashboard, go to **Networking → Firewalls** and click **Create Firewall**.
+  </Step>
+  <Step title="Name your firewall">
+    Enter a descriptive name that reflects the role of the VMs you'll attach it to (e.g., `web-server-fw`, `db-tier-fw`).
+  </Step>
+  <Step title="Add inbound rules">
+    For each inbound rule, choose a **Protocol**, enter a **Port Range**, and specify one or more **Source** CIDRs or VM IDs. Click **Add Rule** to insert additional rows.
+  </Step>
+  <Step title="Add outbound rules">
+    Outbound rules follow the same format but use **Destination** instead of **Source**. If you leave outbound rules empty, all outbound traffic remains allowed by default.
+  </Step>
+  <Step title="Save and attach">
+    Click **Create Firewall**. From the firewall detail page, click **Attach to VM** and select the target VM(s).
+  </Step>
+</Steps>
+
+To create a firewall through the API:
+
+<CodeGroup>
+```bash Create Firewall
+curl -X POST https://api.virtcloud.io/v1/firewalls \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "web-server-fw",
+    "inbound_rules": [
+      {"protocol": "tcp", "port_range": "80",   "sources": ["0.0.0.0/0"]},
+      {"protocol": "tcp", "port_range": "443",  "sources": ["0.0.0.0/0"]},
+      {"protocol": "tcp", "port_range": "22",   "sources": ["192.168.1.0/24"]}
+    ],
+    "outbound_rules": [
+      {"protocol": "tcp", "port_range": "all",  "destinations": ["0.0.0.0/0"]}
+    ]
+  }'
+```
+
+```json Response
+{
+  "id": "fw_9xn4kq2r",
+  "name": "web-server-fw",
+  "status": "active",
+  "inbound_rules": [
+    {"protocol": "tcp", "port_range": "80",  "sources": ["0.0.0.0/0"]},
+    {"protocol": "tcp", "port_range": "443", "sources": ["0.0.0.0/0"]},
+    {"protocol": "tcp", "port_range": "22",  "sources": ["192.168.1.0/24"]}
+  ],
+  "outbound_rules": [
+    {"protocol": "tcp", "port_range": "all", "destinations": ["0.0.0.0/0"]}
+  ],
+  "attached_vms": [],
+  "created_at": "2024-11-14T11:45:00Z"
+}
+```
+</CodeGroup>
+
+## Rule Fields
+
+Each rule object supports the following fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `protocol` | string | `tcp`, `udp`, `icmp`, or `all` |
+| `port_range` | string | A single port (`"22"`), a range (`"8000-9000"`), or `"all"` for every port |
+| `sources` | array | *(Inbound only)* CIDR blocks (e.g., `"10.0.0.0/8"`) or VM IDs (e.g., `"vm_abc123"`) that are allowed to connect |
+| `destinations` | array | *(Outbound only)* CIDR blocks or VM IDs that outbound traffic may reach |
+
+<Tip>
+  Using a VM ID as a source or destination means "any private IP assigned to that VM." This is more reliable than hardcoding a private IP that might change if the VM is replaced.
+</Tip>
+
+## Attaching a Firewall to a VM
+
+```bash
+curl -X POST https://api.virtcloud.io/v1/firewalls/fw_9xn4kq2r/attach \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "virtual_machine_id": "vm_abc123"
+  }'
+```
+
+A VM can have multiple firewalls attached simultaneously. Traffic must satisfy at least one allow rule across all attached firewalls to be permitted. You can also attach a firewall at VM creation by passing `"firewall_ids": ["fw_9xn4kq2r"]` in the VM creation request.
+
+## Updating Rules
+
+Use `PATCH /v1/firewalls/{id}` to update a firewall's rules.
+
+<Warning>
+  The `PATCH` endpoint **replaces the entire rule set**—it does not merge new rules with existing ones. If you send only one inbound rule, all previous inbound rules are removed. Always fetch the current rules first (`GET /v1/firewalls/{id}`), merge your changes locally, and then submit the complete updated rule set.
+</Warning>
+
+```bash
+curl -X PATCH https://api.virtcloud.io/v1/firewalls/fw_9xn4kq2r \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "inbound_rules": [
+      {"protocol": "tcp", "port_range": "80",   "sources": ["0.0.0.0/0"]},
+      {"protocol": "tcp", "port_range": "443",  "sources": ["0.0.0.0/0"]},
+      {"protocol": "tcp", "port_range": "22",   "sources": ["203.0.113.50/32"]},
+      {"protocol": "icmp", "port_range": "all", "sources": ["10.0.0.0/16"]}
+    ],
+    "outbound_rules": [
+      {"protocol": "all", "port_range": "all", "destinations": ["0.0.0.0/0"]}
+    ]
+  }'
+```
+
+## Detaching and Deleting Firewalls
+
+**Detach** a firewall from a specific VM when you no longer want the rules to apply to that VM:
+
+```bash
+curl -X POST https://api.virtcloud.io/v1/firewalls/fw_9xn4kq2r/detach \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "virtual_machine_id": "vm_abc123"
+  }'
+```
+
+**Delete** a firewall once it has been detached from all VMs:
+
+```bash
+curl -X DELETE https://api.virtcloud.io/v1/firewalls/fw_9xn4kq2r \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+Attempting to delete a firewall that is still attached to one or more VMs returns a `409 Conflict` error.
+
+## Common Rule Recipes
+
+<AccordionGroup>
+  <Accordion title="SSH access from office IP only">
+    Restrict SSH to a single trusted CIDR (your office or VPN egress address) and block it from everywhere else.
+
+    ```json
+    {
+      "protocol": "tcp",
+      "port_range": "22",
+      "sources": ["203.0.113.0/24"]
+    }
+    ```
+
+    Replace `203.0.113.0/24` with your office's public IP range. For tighter security, use `/32` to allow a single IP address.
+  </Accordion>
+  <Accordion title="Public HTTP and HTTPS">
+    Allow web traffic from any IP on ports 80 and 443:
+
+    ```json
+    [
+      {"protocol": "tcp", "port_range": "80",  "sources": ["0.0.0.0/0"]},
+      {"protocol": "tcp", "port_range": "443", "sources": ["0.0.0.0/0"]}
+    ]
+    ```
+
+    Add both rules if you redirect HTTP to HTTPS—the redirect itself still requires port 80 to be reachable.
+  </Accordion>
+  <Accordion title="Internal database access only">
+    Allow database connections only from VMs in your VPC's web-tier subnet, and block all public access:
+
+    ```json
+    {
+      "protocol": "tcp",
+      "port_range": "5432",
+      "sources": ["10.0.1.0/24"]
+    }
+    ```
+
+    Substitute `5432` with `3306` for MySQL, `27017` for MongoDB, or `6379` for Redis. Keeping no public-facing rule for the DB port means it is unreachable from the internet regardless of any other configuration.
+  </Accordion>
+  <Accordion title="Allow all internal VPC traffic">
+    For services that should be reachable by any VM in the same VPC but not from the internet:
+
+    ```json
+    {
+      "protocol": "all",
+      "port_range": "all",
+      "sources": ["10.0.0.0/16"]
+    }
+    ```
+
+    Scope the CIDR to your VPC's range. Combine this with more restrictive rules for public-facing ports on the same VM.
+  </Accordion>
+  <Accordion title="ICMP ping for monitoring">
+    Allow ICMP echo requests from your monitoring infrastructure so uptime checks work correctly:
+
+    ```json
+    {
+      "protocol": "icmp",
+      "port_range": "all",
+      "sources": ["10.0.0.0/16"]
+    }
+    ```
+
+    Restricting ICMP to the VPC range means internal health checks succeed while external ping is still blocked.
+  </Accordion>
+</AccordionGroup>
