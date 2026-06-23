@@ -35,8 +35,19 @@
             "group": "Get Started",
             "pages": [
               "introduction",
-              "authentication"
+              "authentication",
+              "quickstart"
             ]
+          },
+          {
+            "group": "Clusters",
+            "pages": [
+              "add-cluster"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": []
           }
         ]
       },

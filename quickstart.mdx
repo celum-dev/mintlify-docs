@@ -1,0 +1,168 @@
+---
+title: "Quickstart"
+description: "Deploy Celum with Docker Compose: the dashboard, API, and database behind your reverse proxy."
+icon: "rocket"
+---
+
+Celum ships as two container images — the dashboard (`app`) and the API (`backend`) — alongside a PostgreSQL database. This guide deploys all three with Docker Compose and connects your first supervisor.
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Docker + Compose" icon="docker">
+    A host with Docker Engine and the Compose plugin.
+  </Card>
+
+  <Card title="Registry access" icon="box">
+    Credentials for the registry that hosts the Celum images.
+  </Card>
+
+  <Card title="OIDC application" icon="key">
+    A client registration with your identity provider (client ID, secret, issuer).
+  </Card>
+
+  <Card title="TLS + DNS" icon="lock">
+    Two hostnames (app \+ API) terminating TLS at a reverse proxy.
+  </Card>
+</CardGroup>
+
+You also need at least one **kubeconfig** for each Cluster API supervisor you want to manage.
+
+<Warning>
+  Celum sets the session cookie with the `Secure` flag, so authentication only works over **HTTPS**. Run Celum behind a TLS-terminating reverse proxy and use `https://` URLs throughout — plain HTTP will fail to log in.
+</Warning>
+
+## 1. Configure environment
+
+Create a `.env` file next to your `docker-compose.yml`. Compose interpolates these values into the stack.
+
+```bash .env
+# --- Public URLs (HTTPS, served by your reverse proxy) ---
+FRONTEND_URL=https://app.example.com
+BACKEND_PUBLIC_URL=https://api.example.com
+OIDC_REDIRECT_URL=https://api.example.com/auth/callback
+COOKIE_DOMAIN=example.com
+
+# --- OIDC ---
+OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0
+OIDC_CLIENT_ID=<client-id>
+OIDC_CLIENT_SECRET=<client-secret>
+# Which token claim maps to IAM groups: "groups" or "roles"
+OIDC_GROUPS_CLAIM=groups
+
+# --- Sessions & authorization ---
+# Generate a strong random key, e.g. `openssl rand -base64 48`
+SESSION_SECRET=<random-secret>
+IAM_ENABLED=true
+
+# --- Database ---
+POSTGRES_PASSWORD=<db-password>
+```
+
+<Note>
+  Register `OIDC_REDIRECT_URL` (`https://<your-api-host>/auth/callback`) as a redirect URI on your OIDC application.
+</Note>
+
+## 2. Add supervisor kubeconfigs
+
+Place one kubeconfig per supervisor in a `kubeconfigs/` directory next to the compose file. **The filename becomes the supervisor name** shown in the UI.
+
+```text
+kubeconfigs/
+  talos-waw        # → supervisor "talos-waw"
+  vsphere-prod     # → supervisor "vsphere-prod"
+```
+
+## 3. Define the stack
+
+```yaml docker-compose.yml
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: k8sgate
+      POSTGRES_USER: k8sgate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  backend:
+    image: harbor.internal.nuvira.dev/vks-manager/backend:1.30.215
+    depends_on:
+      - db
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://k8sgate:${POSTGRES_PASSWORD}@db:5432/k8sgate?sslmode=disable
+      KUBECONFIGS_DIR: /app/kubeconfigs
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL}
+      OIDC_GROUPS_CLAIM: ${OIDC_GROUPS_CLAIM}
+      SESSION_SECRET: ${SESSION_SECRET}
+      FRONTEND_URL: ${FRONTEND_URL}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN}
+      IAM_ENABLED: ${IAM_ENABLED}
+    volumes:
+      - ./kubeconfigs:/app/kubeconfigs:ro
+    restart: unless-stopped
+
+  app:
+    image: harbor.internal.nuvira.dev/vks-manager/app:1.30.215
+    depends_on:
+      - backend
+    environment:
+      AUTH_URL: ${FRONTEND_URL}
+      BACKEND_URL: http://backend:8080
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL}
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+```
+
+Pin the image tag to the version you were provided. Route your reverse proxy so that `FRONTEND_URL` reaches the `app` service on port `3000` and `BACKEND_PUBLIC_URL` reaches the `backend` service on port `8080`.
+
+## 4. Start the stack
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The backend applies database migrations automatically on startup. Once the reverse proxy is routing both hostnames, open your dashboard URL:
+
+```text
+https://app.example.com
+```
+
+## What happens on first load
+
+<Steps>
+  <Step title="Sign in">
+    Unauthenticated requests are redirected to sign in through your OIDC provider. On return, the backend issues a signed session cookie.
+  </Step>
+  <Step title="Default supervisor">
+    The root route resolves the first supervisor you can access and redirects to `/s/{supervisor}/`. If you can access none, you land on `/no-access`.
+  </Step>
+  <Step title="Grant access">
+    With `IAM_ENABLED=true`, access is governed by IAM. Grant yourself the `K8sGateAdmin` policy via a group mapped to your OIDC group — see [Authentication & IAM](/get-started/authentication).
+  </Step>
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication & IAM" icon="key" href="/get-started/authentication">
+    Configure OIDC mapping and policies in depth.
+  </Card>
+
+  <Card title="Create a cluster" icon="circle-plus" href="/clusters/create">
+    Provision a tenant cluster from a template.
+  </Card>
+
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    How the dashboard, API, and supervisors fit together.
+  </Card>
+</CardGroup>

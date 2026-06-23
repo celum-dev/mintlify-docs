@@ -1,0 +1,74 @@
+---
+title: "Create a cluster"
+description: "Provision a tenant cluster from a form, a Cluster API class, or a reusable template — with a preview before anything is created."
+icon: "circle-plus"
+---
+
+Celum provisions tenant clusters on a supervisor. You describe the cluster, review a generated preview, and confirm — Celum then creates it. Cluster creation requires the `cluster:Create` permission on the target supervisor (`krn:vks:supervisor:{name}:cluster:*`).
+
+## Creation flows
+
+There are three entry points, all reachable from a supervisor:
+
+<CardGroup cols={1}>
+  <Card title="From a template" icon="copy" href="/clusters/create">
+    `/s/{supervisor}/create-from-template` — a guided wizard over a predefined template. Best for standardized, repeatable clusters.
+  </Card>
+
+  <Card title="Standard form" icon="pen-to-square">
+    `/s/{supervisor}/clusters/create` — fill cluster settings directly and preview the generated configuration.
+  </Card>
+
+  <Card title="Cluster API class" icon="cubes">
+    `/s/{supervisor}/clusters/create-capi` — spawn a cluster from a ClusterClass whose fields are driven by the class's own variable schema; applied directly to the supervisor.
+  </Card>
+</CardGroup>
+
+## What you configure
+
+Whichever flow you use, a cluster is described by fields such as:
+
+| Group | Fields |
+| --- | --- |
+| Identity | cluster name, environment (`dev`/`staging`/`prod`), region |
+| Kubernetes | version, cluster class |
+| Storage | storage class |
+| Network | domain, pods CIDR (default `10.244.0.0/16`), services CIDR (default `10.96.0.0/12`), service domain |
+| Control plane | replica count (odd) |
+| Worker groups | per group: name, machine class, VM class, replicas |
+| Applications | the platform apps to enable |
+
+Talos-based classes additionally take an image (golden PVC or VM template) and VM sizing.
+
+## Preview and create
+
+Both the standard and template flows generate the cluster configuration and show it to you **before** anything is created:
+
+<Steps>
+  <Step title="Preview">
+    Celum renders the full set of configuration files for the cluster and lists them for review. Nothing is created yet.
+  </Step>
+  <Step title="Confirm">
+    On confirm, the cluster is created on the supervisor and appears in the cluster list.
+  </Step>
+</Steps>
+
+<Note>
+  Pod and service CIDRs are checked against existing clusters on the supervisor. If they would overlap, creation is rejected and fresh non-overlapping subnets are generated automatically.
+</Note>
+
+## Providers
+
+Templates carry a provider (`generic`, `tanzu`, or `talos`), and Celum auto-detects a cluster's provider from its Cluster API `infrastructureRef`. vSphere (VKS/TKGs) and CloudStack are tested; other CAPI providers are compatible.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Authentication & IAM" icon="key" href="/get-started/authentication">
+    The `cluster:Create` permission that gates this flow.
+  </Card>
+
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    How clusters and supervisors relate.
+  </Card>
+</CardGroup>
