@@ -1,0 +1,156 @@
+---
+title: "Authentication & IAM"
+description: "Sign-in with OIDC, signed session cookies, and AWS-style policy authorization with KRN resources."
+icon: "key"
+---
+
+Celum's backend owns authentication (OIDC) and authorization (IAM). A user signs in through your identity provider, receives a signed session cookie, and every action is checked against IAM policies and recorded in the audit log.
+
+## Authentication
+
+### Modes
+
+<CardGroup cols={2}>
+  <Card title="OIDC" icon="user-shield">
+    Production. Sign-in delegated to your provider (Entra ID or any OIDC issuer).
+  </Card>
+
+  <Card title="AUTH_DISABLED" icon="screwdriver-wrench">
+    Development only. Injects a mock `dev@localhost` admin and skips all token validation.
+  </Card>
+</CardGroup>
+
+### The OIDC flow
+
+The backend serves four auth endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /auth/login` | Generates a random `state`, sets a short-lived state cookie, redirects to the provider |
+| `GET /auth/callback` | Validates `state`, exchanges the code, verifies the ID token, creates the session |
+| `GET /auth/logout` | Clears the session cookie |
+| `GET /auth/session` | Returns the current user (`authenticated`, `email`, `name`, `groups`, `iamEnabled`) |
+
+The ID token is verified (signature \+ expiry) and the user's **email**, **name**, and **groups** are read from it. The groups claim drives IAM membership.
+
+### Session cookie
+
+On successful callback the backend issues an HS256-signed JWT stored in the `k8s-gate-session` cookie:
+
+- **HttpOnly**, **Secure**, **SameSite=Lax**
+- Claims: `email`, `name`, `groups`, issuer `k8s-gate`, plus issued/expiry times
+- Lifetime from `SESSION_MAX_AGE` (default `86400` = 24h)
+
+### Configuration
+
+| Variable | Notes |
+| --- | --- |
+| `OIDC_ISSUER` | Discovery URL. Auto-constructed from `AZURE_AD_TENANT_ID` if unset (`https://login.microsoftonline.com/{tenant}/v2.0`). |
+| `OIDC_CLIENT_ID` | Falls back to `AZURE_AD_CLIENT_ID`. |
+| `OIDC_CLIENT_SECRET` | Falls back to `AZURE_AD_CLIENT_SECRET`. |
+| `OIDC_REDIRECT_URL` | Callback URL, e.g. `https://api.example.com/auth/callback`. |
+| `OIDC_MAPPING_SOURCE` | Which claim maps to IAM groups: `groups` (default) or `roles`. |
+| `OIDC_GROUPS_CLAIM` | Explicit claim-name override (takes precedence). |
+| `SESSION_SECRET` | HMAC key for signing sessions. **Set this** — if unset a random key is generated at startup and sessions don't survive a restart. |
+| `SESSION_MAX_AGE` | Session lifetime in seconds (default `86400`). |
+| `FRONTEND_URL` | Redirect target after login/logout. |
+| `COOKIE_DOMAIN` | Cookie domain for cross-subdomain sessions (e.g. `.example.com`). |
+
+## Authorization (IAM)
+
+IAM is AWS-inspired: **policies** with Allow/Deny **statements** are attached to **groups**, groups map to your provider's groups (or hold manual members), and every request is evaluated against the user's effective policies.
+
+### Enforcement
+
+<Warning>
+  `IAM_ENABLED` defaults to **audit-only**. When `false`, denied requests are _logged_ but still **allowed**. Set `IAM_ENABLED=true` to enforce — otherwise authorization is effectively off.
+</Warning>
+
+When enforcing, a denied request returns `403`, and any route that isn't mapped to a permission is denied by default.
+
+### KRN — resource names
+
+Resources are addressed by KRN (`krn:vks:...`), built from `type:id` segments:
+
+```text
+krn:vks:supervisor:talos-waw
+krn:vks:supervisor:talos-waw:cluster:my-cluster
+krn:vks:iam:*
+```
+
+Wildcards are supported: `*` matches one segment, a trailing `*` matches the rest, and prefixes like `prod-*` match `prod-cluster-1`.
+
+### Policy document
+
+```json
+{
+  "version": "2024-01-01",
+  "statements": [
+    {
+      "sid": "allow-read",
+      "effect": "Allow",
+      "actions": ["cluster:List", "cluster:Get"],
+      "resources": ["krn:vks:supervisor:*:cluster:*"]
+    },
+    {
+      "effect": "Deny",
+      "actions": ["cluster:Delete"],
+      "resources": ["krn:vks:*"]
+    }
+  ]
+}
+```
+
+Actions support exact (`cluster:List`), service (`cluster:*`), and full (`*:*`) wildcards.
+
+### Evaluation order
+
+<Steps>
+  <Step title="Default deny">
+    With no matching Allow, access is denied.
+  </Step>
+  <Step title="Explicit deny wins">
+    Any matching `Deny` statement immediately denies, overriding any Allow.
+  </Step>
+  <Step title="Explicit allow">
+    Otherwise, a matching `Allow` grants access.
+  </Step>
+</Steps>
+
+### Groups
+
+A user's groups come from two sources, combined:
+
+- **Provider-mapped** — a group whose `oidc_group_id` matches one of the user's OIDC group/role claims (per `OIDC_MAPPING_SOURCE`).
+- **Manual** — emails added directly to a group.
+
+### Built-in policies
+
+| Policy | Grants |
+| --- | --- |
+| `K8sGateAdmin` | Full access (`*:*` on `krn:vks:*`) |
+| `K8sGateOperator` | Read everything \+ manage clusters/helm/argocd/apps, limited deletes |
+| `K8sGateViewer` | Read-only; no credential downloads |
+| `K8sGateSensitiveRead` | Kubeconfig / talosconfig / SSH-password downloads |
+
+### Managing IAM in the UI
+
+| Page | What you can do |
+| --- | --- |
+| `/iam/policies` | List, create, edit, delete custom policies (managed ones are read-only) |
+| `/iam/groups` | Manage groups, their members, and attached policies; set the mapped OIDC group |
+| `/iam/me` | View your effective permissions and manage API tokens |
+
+API clients can authenticate with a Bearer token issued from **My permissions** instead of the session cookie.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Where session and IAM checks sit in the request pipeline.
+  </Card>
+
+  <Card title="Create a cluster" icon="circle-plus" href="/clusters/create">
+    Cluster creation is gated by `cluster:Create`.
+  </Card>
+</CardGroup>

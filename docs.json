@@ -34,66 +34,13 @@
             "group": "Get Started",
             "pages": [
               "introduction",
-              "quickstart",
-              "concepts"
-            ]
-          },
-          {
-            "group": "Virtual Machines",
-            "pages": [
-              "vms/create",
-              "vms/manage",
-              "vms/snapshots",
-              "vms/templates"
-            ]
-          },
-          {
-            "group": "Networking",
-            "pages": [
-              "networking/overview",
-              "networking/virtual-networks",
-              "networking/firewalls",
-              "networking/load-balancers"
-            ]
-          },
-          {
-            "group": "Storage",
-            "pages": [
-              "storage/overview",
-              "storage/volumes",
-              "storage/backups"
-            ]
-          },
-          {
-            "group": "Account & Security",
-            "pages": [
-              "account/users-roles",
-              "account/ssh-keys",
-              "account/billing"
+              "authentication"
             ]
           }
         ]
       },
       {
-        "tab": "API Reference",
-        "groups": [
-          {
-            "group": "Overview",
-            "pages": [
-              "api/overview",
-              "api/authentication"
-            ]
-          },
-          {
-            "group": "Resources",
-            "pages": [
-              "api/virtual-machines",
-              "api/networks",
-              "api/storage",
-              "api/snapshots"
-            ]
-          }
-        ]
+        "tab": "API Reference"
       }
     ]
   },
