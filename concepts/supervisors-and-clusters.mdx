@@ -15,6 +15,10 @@ flowchart TD
     S2 --> T3[tenant cluster]
 ```
 
+<Frame caption="A supervisor's Summary tab — node, CPU, memory and storage rollups, and the tenant clusters provisioned on it.">
+  ![Celum supervisor overview showing node, CPU, memory and storage tiles above a table of tenant clusters](/images/supervisor-overview.png)
+</Frame>
+
 ## What a supervisor is
 
 A supervisor is, concretely, one kubeconfig plus the name Celum files it under. That name appears in the URL of every scoped page (`/s/<supervisor>/...`), in every API path (`/api/supervisors/<supervisor>/...`), and in every KRN (`krn:vks:supervisor:<supervisor>`).
@@ -120,6 +124,14 @@ The provider is never configured; it is read from the infrastructure reference:
 | `Metal3Cluster` | Bare Metal |
 
 Anything else falls back to the kind name with the `Cluster` suffix stripped — so an unknown CAPI provider still gets a sensible label rather than an error.
+
+### The hosts behind a supervisor
+
+The Infrastructure tab lists the supervisor's own nodes rather than its tenant clusters — status, role, CPU and memory pressure, disks, NIC throughput, and load.
+
+<Frame caption="The Infrastructure tab — the supervisor's own hosts. Each row drills into per-host hardware, network, storage, and sensors.">
+  ![Celum supervisor Infrastructure tab listing three control-plane hosts with CPU, memory, disk and NIC metrics](/images/supervisor-infrastructure.png)
+</Frame>
 
 ## How the two are addressed
 
