@@ -1,0 +1,139 @@
+---
+title: "VM lifecycle"
+description: "Start, stop, resize, live-migrate, snapshot, clone, move between projects, and delete a virtual machine."
+icon: "rotate"
+---
+
+Every lifecycle operation is a separate permission, so you can grant an operator the power to restart a VM without the power to delete it. All of them are scoped to the individual VM: `krn:vks:supervisor:<supervisor>:vm:<vm>`.
+
+## Permissions at a glance
+
+| Operation | Action |
+| --- | --- |
+| Start / stop / restart | `vm:Start` · `vm:Stop` · `vm:Restart` |
+| Change instance type, edit labels | `vm:Update` |
+| Live-migrate, cancel a migration | `vm:Migrate` |
+| Snapshot, delete a snapshot | `vm:Snapshot` |
+| Restore from a snapshot | `vm:Restore` |
+| Clone | `vm:Create` |
+| Move to another project | `vm:Move` |
+| Delete | `vm:Delete` |
+| Read state, events, metrics | `vm:Get` |
+
+## VMs Celum does not own
+
+Not every VM on a supervisor was created by you. VMs provisioned by Cluster API as nodes of a guest cluster are **managed** — their lifecycle belongs to the controller that created them.
+
+<Warning>
+  Start, stop, restart, delete, and edit are **rejected with `409`** on a managed VM. This is deliberate: stopping a cluster node behind its controller's back would orphan the machine object. To remove such a VM, scale or delete the cluster that owns it.
+</Warning>
+
+The VM list distinguishes them, and shows the owning cluster and the node's role (control plane or worker).
+
+## Power operations
+
+<Steps>
+  <Step title="Stop">
+    A graceful shutdown when `qemu-guest-agent` is connected. Without the agent the guest gets no clean shutdown signal.
+  </Step>
+  <Step title="Start">
+    Boots the VM again. An **ephemeral** VM starts from the golden every time — everything written during the previous run is gone.
+  </Step>
+  <Step title="Restart">
+    Stop and start in one action. Required to pick up a new instance type.
+  </Step>
+</Steps>
+
+## Resizing
+
+Changing a VM's instance type changes its CPU and memory allocation. The change is recorded immediately but **takes effect at the next start or restart** — KubeVirt resolves the instance type into the running instance only at boot. The response says so explicitly, and the previously pinned revision is cleared so the new class is picked up rather than the old snapshot of it.
+
+<Note>
+  A VM that appears unchanged after a resize has almost certainly not been restarted yet.
+</Note>
+
+## Live migration
+
+Migration moves a running VM to another node without stopping it.
+
+**Prerequisite**: the VM must be migratable, which in practice means it was built on a **ReadWriteMany** image and uses the `masquerade` network mode. A `ReadWriteOnce` VM, or one in `bridge` mode, is pinned to its node.
+
+By default the scheduler picks the destination. You can pin a target node — useful when draining one — and the target is validated against the real node list before the migration is created. A migration in progress can be cancelled.
+
+<Note>
+  A VM with the identity network keeps its identity address across the cutover. That is what the identity network exists for — the pod IP does not survive.
+</Note>
+
+## Snapshots
+
+Snapshots capture a point-in-time copy of **all** of a VM's volumes, and a restore rolls the VM back to one.
+
+<Warning>
+  Snapshots are **on-demand only**. There is no scheduler and no retention policy — nothing takes them for you, and nothing prunes them. If you need periodic snapshots, drive them from outside Celum.
+</Warning>
+
+With the guest agent connected, the filesystem can be frozen for the snapshot, which is what makes it consistent. Without the agent, you get a crash-consistent copy.
+
+## Clone and move between projects
+
+Kubernetes has no in-place namespace move, so both operations work by copying:
+
+<Steps>
+  <Step title="Disks are cloned">
+    The VM's disks are cloned into the target namespace.
+  </Step>
+  <Step title="The VM is recreated">
+    The VM is rebuilt there, along with its provisioning secrets and config maps.
+  </Step>
+  <Step title="It is verified running">
+    The copy must come up before the operation is considered successful.
+  </Step>
+  <Step title="For a move, the source is removed">
+    A **move** then stops and deletes the original. A **clone** leaves it in place and names the copy `<vm>-copy` unless you choose a name.
+  </Step>
+</Steps>
+
+<Warning>
+  **Exposures are not carried over.** LoadBalancer services, gateway publications, and their routes stay behind — the copy lands unexposed and you re-publish it in the new project. See [Networking](/vms/networking).
+</Warning>
+
+Because the target is a different project namespace, the VM also picks up that project's isolation policy and address space rather than the one it left.
+
+## Deleting
+
+Deleting a VM removes the VM object. Disks that were created as part of it go with it; volumes you attached from existing claims are a separate decision — see [Storage & disks](/vms/storage).
+
+<Warning>
+  There is no undo and no recycle bin. If the VM held data you care about, take a snapshot first — and note that deleting the VM does not preserve snapshots as a restore path for a VM that no longer exists.
+</Warning>
+
+## Diagnosing a stuck VM
+
+The VM detail page carries an **Events** tab, which surfaces the Kubernetes events for that VM. When a VM will not start, that is the first place to look — scheduling failures, image pull problems, and PVC binding issues all report there with the underlying reason.
+
+| Symptom | Where to look |
+| --- | --- |
+| Never leaves pending | Events — usually no node fits the instance type, or a PVC is unbound |
+| Runs, but reports no OS or IP | The guest agent never came up — see [Console & access](/vms/console-and-access) |
+| Migration does not start | The VM is not migratable: `ReadWriteOnce` disks or a non-masquerade network mode |
+| `409` on every action | The VM is managed by a controller — act on the owning cluster instead |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Create a VM" icon="circle-plus" href="/vms/create">
+    The choices made at creation that constrain lifecycle later.
+  </Card>
+
+  <Card title="Storage & disks" icon="hard-drive" href="/vms/storage">
+    Volumes, snapshots, and what deletion takes with it.
+  </Card>
+
+  <Card title="Networking" icon="network-wired" href="/vms/networking">
+    What a move leaves behind and how to re-publish.
+  </Card>
+
+  <Card title="Permissions" icon="list-check" href="/reference/permissions">
+    Every `vm:*` action and its KRN.
+  </Card>
+</CardGroup>

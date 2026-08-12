@@ -24,10 +24,9 @@
           {
             "group": "Get Started",
             "pages": [
-              "quickstart",
               "get-started/introduction",
-              "get-started/authentication",
-              "get-started/quickstart"
+              "get-started/quickstart",
+              "get-started/authentication"
             ]
           },
           {
@@ -43,6 +42,17 @@
             "group": "Clusters",
             "pages": [
               "clusters/create"
+            ]
+          },
+          {
+            "group": "Virtual machines",
+            "icon": "server",
+            "pages": [
+              "vms/create",
+              "vms/lifecycle",
+              "vms/networking",
+              "vms/storage",
+              "vms/console-and-access"
             ]
           },
           {
