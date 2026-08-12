@@ -24,10 +24,9 @@
           {
             "group": "Get Started",
             "pages": [
-              "quickstart",
               "get-started/introduction",
-              "get-started/authentication",
-              "get-started/quickstart"
+              "get-started/quickstart",
+              "get-started/authentication"
             ]
           },
           {
