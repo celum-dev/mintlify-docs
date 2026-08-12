@@ -1,0 +1,158 @@
+---
+title: "Projects"
+description: "A project is a namespace plus its own slice of pod, LoadBalancer, and egress address space — held entirely in Kubernetes."
+icon: "folder-tree"
+---
+
+A **project** is Celum's unit of tenancy on a supervisor. Creating one gives a team a namespace, a private pod CIDR, a LoadBalancer range, an egress identity, and — by default — network isolation from every other project on the same cluster.
+
+## What a project actually is
+
+Celum stores **no project state of its own**. A project is Kubernetes objects, and Kubernetes is the only source of truth:
+
+| Object | Role |
+| --- | --- |
+| `Namespace` named `proj-<name>` | The project itself, labelled `nuvira.dev/managed-by=k8s-gate` and `nuvira.dev/project=<name>` |
+| Cilium `CiliumPodIPPool` | The project's pod CIDR |
+| Cilium `CiliumLoadBalancerIPPool` | The project's LoadBalancer range |
+| Cilium `CiliumEgressGatewayPolicy` | The source IP the project's traffic leaves with |
+| `CiliumNetworkPolicy` | The default isolation policy, when enabled |
+
+Description and creator are kept as namespace annotations (`nuvira.dev/description`, `nuvira.dev/created-by`). Delete the namespace outside Celum and the project is gone — there is no database row left behind to reconcile.
+
+<Note>
+  Project names must be DNS-1123 labels: lowercase alphanumerics and hyphens, starting and ending with an alphanumeric, 2–42 characters. The namespace is always the name prefixed with `proj-`.
+</Note>
+
+## Supervisor pool configuration
+
+Before projects can be allocated automatically, the supervisor needs to know which address space it is carving up. That configuration lives in a singleton `NuviraClusterConfig` CRD, plus the pod CIDR that Cilium already owns:
+
+| Setting | Source | Meaning |
+| --- | --- | --- |
+| Pod supercidr \+ mask size | Cilium's HelmRelease values | The pool project pod CIDRs are cut from. Read-only in Celum — Cilium owns it. |
+| Egress pool | `NuviraClusterConfig` | The range project egress IPs are drawn from. **Required.** |
+| LB supercidr \+ slice mask | `NuviraClusterConfig` | The range project LoadBalancer slices are cut from. |
+
+The config endpoint always answers, with a `seeded` flag telling you which case you are in: `true` when the `NuviraClusterConfig` CRD exists, `false` when you are looking at derived defaults that nobody has confirmed.
+
+<Warning>
+  `seeded: false` is not a working configuration — it is a placeholder. Set the egress pool before creating projects, or every project will draw its egress IP from a range you did not choose.
+</Warning>
+
+## Allocation
+
+When you create a project you may specify the pod CIDR, LB CIDR, and egress IP, or leave them empty and let Celum allocate. Allocation works by **listing the live Cilium CRDs on each create** and taking the next free slice — there is no stored "taken" set that can drift from reality.
+
+<Note>
+  Because allocation reads live state, a project created outside Celum that uses one of these ranges is still counted. Conversely, hand-editing a pool CRD changes what the allocator considers free.
+</Note>
+
+## Network isolation
+
+New projects are isolated **unless you opt out**. Isolation is one `CiliumNetworkPolicy` in the project namespace that flips it to default-deny and then opens a specific set of holes:
+
+<AccordionGroup>
+  <Accordion title="What the default isolation policy allows">
+    - Traffic within the project namespace, both directions
+    - Egress DNS to `kube-dns` in `kube-system` (UDP \+ TCP 53)
+    - Ingress from the outside world, the host and remote nodes, and Cilium's ingress proxy — which is what keeps kubelet probes and Gateway-published services working
+    - Ingress from the Cluster API and KubeVirt control-plane namespaces, so a guest cluster provisioned inside an isolated project can bootstrap
+    - Egress to the world, host and remote nodes, and the Kubernetes API server
+    - Egress to the central observability stack, unless you turn that off
+  </Accordion>
+
+  <Accordion title="What it denies">
+    Ingress from every other namespace on the supervisor. That is the point of the policy — everything else in the list above exists to stop the deny from breaking things that must keep working.
+  </Accordion>
+</AccordionGroup>
+
+### Create-once, never overwritten
+
+The isolation policy is created only when it is **absent**. Re-applying a project never overwrites it, so exceptions you add in Policy Studio survive. Turning the toggle off deletes the policy.
+
+This is why the UI tracks intent and reality separately: the namespace annotation records that the project _should_ be isolated, while the badge reads whether the policy _currently exists_. A policy deleted by hand in Policy Studio shows the project as open even though its annotation still says isolated.
+
+### Two related switches
+
+| Switch | Default | Effect |
+| --- | --- | --- |
+| **Observability egress** | On | The isolation policy opens egress to the central Prometheus / ClickHouse / Loki stack. Turning it off cuts guest metrics and log shipping. |
+| **Kamaji control-plane access** | Off | Adds a policy letting hosted Kamaji control planes in this project reach the shared etcd and serve their tenant API. Creating a Kamaji cluster in the namespace enables it anyway. |
+
+<Warning>
+  Turning off observability egress silently breaks every metrics and log remote-write from workloads in that project. Nothing errors — the data simply stops arriving.
+</Warning>
+
+## Egress
+
+Each project can leave the cluster with its own source IP, which is what makes project-level firewall rules possible upstream.
+
+| Mode | Behaviour |
+| --- | --- |
+| Default | No egress gateway policy — traffic leaves with the node's address. |
+| Single-active | One egress IP, active on one node at a time. |
+| Per-node spread | One IP per node for a chosen number of nodes, each with its own gateway policy. Can draw from an override CIDR instead of the supervisor's egress pool. |
+
+<Note>
+  The project form also offers an **anycast** egress routing choice. Selecting it records the intent on the project, but the data plane still performs single-active failover — it does not yet change how traffic is routed.
+</Note>
+
+### VM identity pool
+
+A project may additionally be given a VM-identity CIDR (between `/16` and `/29`). Each VM in the project then claims a routable address that follows it through live migration, with no LoadBalancer involved.
+
+## BGP advertisement
+
+A project's three address sources — pod, LoadBalancer, and egress — each carry an advertise choice of default, on, or off. The selection is stored on the namespace and fanned out to the BGP configuration, so what the fabric hears matches what the project declared.
+
+## Deleting a project
+
+Deletion is an **ordered teardown**, not a namespace delete: Cluster API clusters in the project go first, the namespace last. While it runs, the project reports itself as deleting.
+
+<Warning>
+  Deleting a project deletes the tenant clusters inside it. This is not recoverable from Celum.
+</Warning>
+
+## Permissions
+
+Projects are gated by the **Cilium** actions, not by a `project:*` service — a project is Cilium configuration, and the permission model follows the objects rather than the UI page.
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| List / read projects, read pool config | `cilium:GetState` | `krn:vks:supervisor:<supervisor>:cilium:*` |
+| Create, update, delete a project; write pool config | `cilium:Apply` | `krn:vks:supervisor:<supervisor>:cilium:*` |
+
+<Warning>
+  Granting `cilium:Apply` so someone can manage projects also lets them change the supervisor's Cilium configuration. There is no narrower grant — scope it by supervisor if you need to limit the blast radius.
+</Warning>
+
+## What commonly goes wrong
+
+| Symptom | Cause |
+| --- | --- |
+| Create rejected with an invalid egress pool | The supervisor's pool config was never seeded, or the CIDR does not parse. Allocation is dry-run at write time, so this fails fast. |
+| Project shows as "open" though isolation is enabled | The isolation policy was deleted outside Projects. The badge reads live policy existence, not the stored intent. |
+| Guest agents in a project stop reporting metrics | Observability egress was turned off on that project. |
+| A guest cluster in an isolated project never bootstraps | Its provisioning controllers live in a namespace outside the allowed control-plane set. |
+| Two projects collide on an address range | A pool CRD was edited by hand, or a range was claimed outside Celum. The allocator only sees live CRDs. |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Supervisors & clusters" icon="layer-group" href="/concepts/supervisors-and-clusters">
+    The layer a project sits on.
+  </Card>
+
+  <Card title="Permissions model" icon="shield-halved" href="/concepts/permissions-model">
+    Why project routes resolve to `cilium:*` actions.
+  </Card>
+
+  <Card title="Create a cluster" icon="circle-plus" href="/clusters/create">
+    Clusters are provisioned into a project's namespace.
+  </Card>
+
+  <Card title="Glossary" icon="book" href="/reference/glossary">
+    Supercidr, EGP, KRN, and the rest of the vocabulary.
+  </Card>
+</CardGroup>

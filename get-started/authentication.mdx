@@ -60,6 +60,8 @@ On successful callback the backend issues an HS256-signed JWT stored in the `k8s
 
 IAM is AWS-inspired: **policies** with Allow/Deny **statements** are attached to **groups**, groups map to your provider's groups (or hold manual members), and every request is evaluated against the user's effective policies.
 
+The mechanics — KRN matching, wildcard rules, unmapped routes, cache refresh — are covered in depth in [Permissions model](/concepts/permissions-model).
+
 ### Enforcement
 
 <Warning>
@@ -73,8 +75,8 @@ When enforcing, a denied request returns `403`, and any route that isn't mapped 
 Resources are addressed by KRN (`krn:vks:...`), built from `type:id` segments:
 
 ```text
-krn:vks:supervisor:talos-waw
-krn:vks:supervisor:talos-waw:cluster:my-cluster
+krn:vks:supervisor:<supervisor>
+krn:vks:supervisor:<supervisor>:cluster:<cluster>
 krn:vks:iam:*
 ```
 
@@ -101,7 +103,7 @@ Wildcards are supported: `*` matches one segment, a trailing `*` matches the res
 }
 ```
 
-Actions support exact (`cluster:List`), service (`cluster:*`), and full (`*:*`) wildcards.
+Actions support exact (`cluster:List`), service (`cluster:*`), and full (`*:*`) wildcards. Every action Celum defines is listed in [Permissions reference](/reference/permissions).
 
 ### Evaluation order
 
@@ -124,14 +126,30 @@ A user's groups come from two sources, combined:
 - **Provider-mapped** — a group whose `oidc_group_id` matches one of the user's OIDC group/role claims (per `OIDC_MAPPING_SOURCE`).
 - **Manual** — emails added directly to a group.
 
+<Note>
+  The match on `oidc_group_id` is **exact**, against whichever claim `OIDC_MAPPING_SOURCE` / `OIDC_GROUPS_CLAIM` selects. With `OIDC_MAPPING_SOURCE=groups` that means the provider's group **object ID**, not its display name; with `roles` it means the app role's **value**.
+</Note>
+
+### Bootstrapping the first admin
+
+A fresh database is seeded with an `Administrators` group holding the `K8sGateAdmin` policy and mapped to the OIDC claim value `krn:vks:admin`. Without that seed, turning on `IAM_ENABLED` against an empty database locks everyone out — there would be policies, but no group carrying them and no claim mapping to anything, so every request ends in the default deny.
+
+To get in, either assign the claim value `krn:vks:admin` to your account at the identity provider, or edit the `Administrators` group's mapped OIDC group so it matches a claim you already carry.
+
 ### Built-in policies
+
+These are reconciled at startup and are read-only in the UI.
 
 | Policy | Grants |
 | --- | --- |
 | `K8sGateAdmin` | Full access (`*:*` on `krn:vks:*`) |
-| `K8sGateOperator` | Read everything \+ manage clusters/helm/argocd/apps, limited deletes |
+| `K8sGateOperator` | Read everything \+ manage clusters/helm/argocd/apps/VMs, limited deletes |
 | `K8sGateViewer` | Read-only; no credential downloads |
 | `K8sGateSensitiveRead` | Kubeconfig / talosconfig / SSH-password downloads |
+
+<Note>
+  Credential downloads are deliberately **not** in Operator or Viewer. Attach `K8sGateSensitiveRead` separately to the people who should be able to pull a kubeconfig, talosconfig, or SSH password.
+</Note>
 
 ### Managing IAM in the UI
 
@@ -143,9 +161,26 @@ A user's groups come from two sources, combined:
 
 API clients can authenticate with a Bearer token issued from **My permissions** instead of the session cookie.
 
+## What commonly goes wrong
+
+| Symptom | Cause |
+| --- | --- |
+| `403 {"action":"unmapped"}` | The route carries no permission mapping. With IAM enabled, unmapped routes are denied outright — no policy can grant them. |
+| A user's new group has no effect for up to 30s | The policy cache refreshes on a 30-second loop. |
+| The right policy is attached, still denied | A `Deny` statement matches. Explicit deny always wins, regardless of how broad the Allow is. |
+| Everything works, yet nothing is enforced | `IAM_ENABLED` is not `true`. Denials are logged as `AUDIT-ONLY would-deny` and the request proceeds. |
+
 ## Next steps
 
 <CardGroup cols={2}>
+  <Card title="Permissions model" icon="shield-halved" href="/concepts/permissions-model">
+    How routes resolve to actions and KRNs, and how matching really works.
+  </Card>
+
+  <Card title="Permissions reference" icon="list-check" href="/reference/permissions">
+    Every action Celum defines, by service.
+  </Card>
+
   <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
     Where session and IAM checks sit in the request pipeline.
   </Card>
