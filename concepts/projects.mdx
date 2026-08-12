@@ -6,6 +6,10 @@ icon: "folder-tree"
 
 A **project** is Celum's unit of tenancy on a supervisor. Creating one gives a team a namespace, a private pod CIDR, a LoadBalancer range, an egress identity, and — by default — network isolation from every other project on the same cluster.
 
+<Frame caption="The Projects page — each project with its namespace, pod CIDR, egress addresses, LoadBalancer range, and isolation state.">
+  ![Celum Projects page listing four projects with their namespaces, egress IPs, LoadBalancer CIDRs, and owners](/images/projects-list.png)
+</Frame>
+
 ## What a project actually is
 
 Celum stores **no project state of its own**. A project is Kubernetes objects, and Kubernetes is the only source of truth:
