@@ -1,0 +1,185 @@
+---
+title: "Create a VM"
+description: "Provision a KubeVirt virtual machine from a golden image or an ISO, with cloud-init, sysprep, disk layout, and network mode."
+icon: "circle-plus"
+---
+
+Celum runs virtual machines on a supervisor through **KubeVirt**. A VM is created from an image in the image library — either cloned from a prepared golden disk or installed from an ISO — and provisioned on first boot by cloud-init (Linux) or sysprep (Windows).
+
+## Prerequisites
+
+- **Permission**: `vm:Create` on `krn:vks:supervisor:<supervisor>:vm:*`. The form's dropdowns also need `discovery:ListInstanceTypes`, `discovery:ListStorageClasses`, and `discovery:ListNamespaces`.
+- **KubeVirt installed** on the supervisor. Its status is `virt:GetStatus`; installing it is `virt:Install` — see the platform onboarding wizard.
+- **An image in the library with status `ready`.** Creation is rejected against an image in any other state.
+- A storage class that can back the VM's disks.
+
+<Note>
+  `<supervisor>` and `<vm>` are placeholders throughout. Substitute your own names.
+</Note>
+
+## What an image gives you
+
+Two properties of the chosen image decide what the VM can later do:
+
+| Image property | Values | Consequence |
+| --- | --- | --- |
+| `imageType` | `disk` · `iso` | A `disk` image is cloned and provisioned by cloud-init or sysprep. An `iso` boots an installer against a blank disk. |
+| `accessMode` | `ReadWriteOnce` · `ReadWriteMany` | Live migration and the VM Identity Network require **ReadWriteMany**. A `ReadWriteOnce` VM is pinned to its node. |
+
+<Warning>
+  Choose the access mode at image-import time, not at VM-create time. A VM built on a `ReadWriteOnce` image cannot be live-migrated later without rebuilding it from an RWX image.
+</Warning>
+
+## Create it
+
+<Steps>
+  <Step title="Name and place it">
+    Give the VM a name and pick a namespace. The namespace defaults to `default` — in practice you want a [project](/concepts/projects) namespace so the VM inherits that project's addressing and isolation.
+  </Step>
+  <Step title="Pick the image and instance type">
+    Name, image, and instance type are the only strictly required fields. The instance type sets CPU and memory; disk size defaults to `20Gi` when left empty.
+  </Step>
+  <Step title="Set up access">
+    For Linux, supply SSH public keys and/or a password. For Windows, an admin password. See [Console & access](/vms/console-and-access).
+  </Step>
+  <Step title="Choose a network mode">
+    Leave the default unless you have a reason not to — see below.
+  </Step>
+  <Step title="Add provisioning">
+    Startup commands, a cloud-init template, extra partitions, or data disks.
+  </Step>
+  <Step title="Create">
+    The VM object is created and the disk clone or ISO install begins.
+  </Step>
+</Steps>
+
+## Network mode
+
+Set at creation and not changeable afterwards without recreating the VM.
+
+| Mode | Behaviour |
+| --- | --- |
+| `masquerade` (default) | NAT behind the pod's address. The guest sees a private address. Live-migratable, and the only mode the VM Identity Network is built for. |
+| `bridge` | The guest owns the pod IP directly, no NAT. **Live migration and the VM Identity Network are unavailable.** |
+| `passt` | User-space network stack, replacing the NAT path. |
+
+<Warning>
+  Enabling the identity network with `bridge` or `passt` is accepted but logged as experimental — the claim address's NAT path assumes the masquerade layout, so the address may not behave as intended. Use `masquerade` when you want a stable identity IP.
+</Warning>
+
+### VM Identity Network
+
+An optional stable, BGP-routable address that follows the VM across live migrations, instead of the volatile pod IP. It requires:
+
+- an **identity pool** on the supervisor (`identityPool` is mandatory when the identity network is enabled), and
+- a **ReadWriteMany** image — an identity address is pointless without live migration, since surviving the migration cutover is its whole purpose.
+
+The address is allocated **before** the VM object is created, so a bad pool, an exhausted pool, or a non-migratable image fails cleanly with nothing left behind.
+
+## Linux provisioning
+
+Provisioning is delivered through cloud-init (or Ignition, for images that use it) as a single boot script.
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| SSH keys / password | — | Written into the guest at first boot |
+| Startup commands | — | Run as part of the boot script |
+| **Guest agent** | **On** for Linux disk images | Installs `qemu-guest-agent`. Ignored for ISO installs and Windows goldens, which deliver it another way. |
+| Ship guest logs | Off | Installs Grafana Alloy in the guest to push journald to the supervisor's Loki, queryable as `{vm="<vm>"}` |
+| Cloud-init template | — | A stored template rendered with your variables and prepended to the startup commands |
+
+<Warning>
+  Do not turn the guest agent off casually. Without it KubeVirt cannot report the guest OS or IP, cannot shut the VM down gracefully, and cannot freeze the filesystem for snapshots — and the listening-ports, processes, filesystems, and connectivity-check endpoints all return `404`.
+</Warning>
+
+The agent install is placed **first** in the boot script, ahead of any template, so the VM reports its OS and address in seconds rather than after a long package install finishes.
+
+## Windows provisioning
+
+<Tabs>
+  <Tab title="From a golden image">
+    A prepared Windows disk image is cloned. Provisioning is delivered on a sysprep CD:
+
+    - **Sysprep template** — an `autounattend.xml` with template variables. Empty uses the built-in default with the universal virtio driver paths.
+    - **Setup script** — a PowerShell script delivered as `setup.ps1` and run once at first logon. This is the Windows equivalent of startup commands; put IIS, SQL, and tooling installs here.
+  </Tab>
+  <Tab title="From an ISO">
+    An installer ISO boots against a blank disk:
+
+    - **Root disk size** — the blank disk Windows installs onto.
+    - **Virtio drivers** — mounts the driver disk so the installer can see the virtio disk and NIC.
+    - **Unattended** — with an admin password, generates the answer file so the install runs without interaction. The setup script runs here too.
+  </Tab>
+</Tabs>
+
+Two Windows options default to on and rarely need touching:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| Hyper-V enlightenments | On for Windows images | KVM paravirtualization for a Windows guest. Turn off only for a guest that misbehaves with a specific enlightenment. |
+| WinRM | On for Windows images | Lets the platform inspect the guest without a graphical session. **Never published through a LoadBalancer** — reachable on the VM's own address only. |
+
+## Disk layout
+
+Beyond the boot disk you can define, at creation time:
+
+- **Root partitions** — extra partitions carved out of the boot disk after the image's own root partition, each with a mount path, size, and filesystem (`ext4`, `xfs`, or `btrfs`; `ext4` by default). A partition with no size takes the remaining space and must be last.
+- **Data disks** — additional blank disks, each formatted and mounted at a path you choose. A data disk can use its own storage class; otherwise it inherits the VM's.
+
+Both work for cloud-init and Ignition images. Disks can also be added later — see [Storage & disks](/vms/storage).
+
+## Ephemeral boot
+
+Instead of cloning the golden into a per-VM disk, the VM can boot from a copy-on-write overlay over a shared, read-only golden. There is no clone, so boot takes seconds rather than minutes — and **all writes are discarded when the VM stops**.
+
+<Note>
+  Ephemeral boot is an API-only option — it is deliberately not in the create form. It requires an NFS-CSI-backed golden, because that is the only case where the read-only base can be shared cheaply. Use it for disposable and test VMs.
+</Note>
+
+## Verify it worked
+
+The VM appears in the list at `/s/<supervisor>/vms`. Open it and check, in order:
+
+<Steps>
+  <Step title="It is running">
+    Status reaches running. A clone-based boot on file storage can take a couple of minutes before this happens.
+  </Step>
+  <Step title="The guest agent connected">
+    The VM reports its guest OS and internal IP. Until the agent connects, those fields stay empty and the introspection tabs have nothing to show.
+  </Step>
+  <Step title="The identity address is present">
+    If you enabled the identity network, the VM shows an identity IP alongside its pod IP.
+  </Step>
+</Steps>
+
+## What commonly goes wrong
+
+| Symptom | Cause |
+| --- | --- |
+| `400` — image is not ready | The image is still importing, or its import failed. Only `ready` images can be used. |
+| `400` — identity network requires a live-migratable image | The image is `ReadWriteOnce`. Import an RWX golden, or drop the identity network. |
+| `400` — `identityPool` is required | The identity network was enabled without naming a pool. |
+| `400` — invalid `networkMode` | Only `masquerade`, `bridge`, and `passt` are accepted. |
+| `502` — cannot connect to supervisor | The supervisor's kubeconfig is stale or the cluster is unreachable. |
+| VM runs but reports no OS or IP; introspection tabs `404` | `qemu-guest-agent` never installed. Common on VMs created through the API by callers that turned it off. |
+| Windows VM boots but nothing is installed | The provisioning went into the answer file's logon commands rather than the setup script. Use the setup script. |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Lifecycle" icon="rotate" href="/vms/lifecycle">
+    Start, stop, migrate, snapshot, clone, move, and delete.
+  </Card>
+
+  <Card title="Networking" icon="network-wired" href="/vms/networking">
+    Publishing ports, gateways, and the identity network.
+  </Card>
+
+  <Card title="Storage & disks" icon="hard-drive" href="/vms/storage">
+    Attaching, detaching, and snapshotting volumes.
+  </Card>
+
+  <Card title="Console & access" icon="terminal" href="/vms/console-and-access">
+    VNC, the guest agent, and in-guest introspection.
+  </Card>
+</CardGroup>

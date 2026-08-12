@@ -1,0 +1,127 @@
+---
+title: "VM storage & disks"
+description: "Attach, mount, detach, and delete VM volumes — and understand which of those destroy data."
+icon: "hard-drive"
+---
+
+A VM's disks are Kubernetes volumes. The **Disks** tab on the VM detail page is where you add them, mount them, and take them away again — and where the difference between the four removal operations matters most.
+
+## Permissions
+
+| Task | Action |
+| --- | --- |
+| Attach a volume, unmount one in the guest | `vm:AttachVolume` |
+| Detach a volume, delete a volume, eject from the VM spec | `vm:Eject` |
+| List volumes and snapshots on the VM | `vm:Get` |
+| Populate the claim and snapshot pickers | `discovery:ListPVCs` · `discovery:ListVolumeSnapshots` |
+
+## Disks defined at creation
+
+Two kinds are set up when the VM is created — see [Create a VM](/vms/create):
+
+- **Root partitions** carved out of the boot disk after the image's own root partition, each with a mount path, size, and filesystem.
+- **Data disks**, blank disks formatted and mounted at a path you choose, each optionally on its own storage class.
+
+## Attaching a volume later
+
+Attaching goes through KubeVirt's add-volume subresource, which means **one operation covers both states**: on a running VM the disk is hot-plugged live; on a stopped VM it is written into the VM's spec so it appears at next boot.
+
+Three sources:
+
+<Tabs>
+  <Tab title="Existing claim">
+    Attach a PersistentVolumeClaim that already exists in the namespace. Use this to move a disk between VMs or to attach storage provisioned elsewhere.
+  </Tab>
+  <Tab title="Blank">
+    Create a new empty claim of the size and storage class you choose, then attach it. The equivalent of adding a data disk after the fact.
+  </Tab>
+  <Tab title="From a snapshot">
+    Create a claim cloned from an existing volume snapshot, then attach it. Use this to inspect a snapshot's contents without rolling the whole VM back.
+  </Tab>
+</Tabs>
+
+<Note>
+  The volume is attached to the VM, not mounted in the guest. A Linux guest still needs a filesystem and a mount — blank disks created at VM-creation time are formatted and mounted for you, but one attached later is a raw block device until you handle it.
+</Note>
+
+## Removing a volume — four different things
+
+These are easy to confuse and only one of them destroys data.
+
+| Operation | What happens | Data |
+| --- | --- | --- |
+| **Unmount** | Unmounts the filesystem inside the running guest and removes its `/etc/fstab` entry. The volume stays attached to the VM. | Kept |
+| **Detach** | Unmounts in the guest as a courtesy, then hot-unplugs the disk from the VM. The backing claim is left alone. | Kept |
+| **Eject** | Removes the disk from the VM's own spec: the VM is stopped, the disk and its template are removed, and the VM is started again. | Kept |
+| **Delete** | Unmounts, detaches, then **deletes the backing claim**. | **Destroyed** |
+
+<Warning>
+  **Delete is irreversible.** Everything on the volume is gone. Detach is the non-destructive inverse of attach — reach for that unless you specifically want the storage reclaimed.
+</Warning>
+
+<Note>
+  Eject restarts the VM. It changes the VM's spec rather than hot-unplugging, so it is not a live operation — expect downtime.
+</Note>
+
+The best-effort guest unmount that precedes detach and delete needs the guest agent, and works on **Linux guests only**. On Windows, or with the agent down, the disk is pulled without the guest releasing its filesystem first — unmount it from inside the guest beforehand.
+
+## Storage class and volume mode
+
+When a disk is created, Celum checks whether the target storage class can back a block volume and picks the volume mode accordingly. On file-based storage such as NFS, ReadWriteMany disks stay filesystem-mode so they bind at all — and matching the golden image's mode is also what allows the fast clone path.
+
+This is why the storage class you choose has consequences beyond capacity:
+
+| Storage | Typical effect |
+| --- | --- |
+| Block-capable, ReadWriteMany | Fast clones, live migration available |
+| File-based, ReadWriteMany | Live migration available; clones are slower |
+| ReadWriteOnce | No live migration — the VM is pinned to its node |
+
+## Snapshots
+
+VM snapshots capture **all** of a VM's volumes at once and are managed from the Disks tab. They are on-demand only — nothing schedules or prunes them. Restoring rolls the whole VM back; to recover a single file, clone the snapshot into a new claim and attach it to a running VM instead.
+
+See [VM lifecycle](/vms/lifecycle) for the snapshot and restore flow.
+
+## Seeing usage from inside the guest
+
+With the guest agent connected, the VM's Resources tab shows per-filesystem used and total bytes as the guest reports them. This is the guest's own view, so it accounts for what is actually mounted — unlike the claim sizes, which only tell you what was provisioned. The section is hidden when the agent is not connected.
+
+## Ephemeral VMs
+
+A VM created with ephemeral boot writes to a copy-on-write overlay over a shared read-only golden.
+
+<Warning>
+  Everything written to an ephemeral VM's root disk is **discarded when it stops** — including on a restart. Attach a separate volume for anything that must survive.
+</Warning>
+
+## What commonly goes wrong
+
+| Symptom | Cause |
+| --- | --- |
+| Attached disk does not appear in the guest | It was attached but never formatted or mounted. Disks added after creation are raw devices. |
+| Unmount reports the volume is not mounted | The disk is attached but was never mounted in the guest, or was already unmounted. |
+| In-guest unmount unavailable | The guest is Windows, or the agent is not connected — in-guest operations are Linux-only. |
+| A new disk stays pending | The storage class cannot satisfy the requested access mode — commonly ReadWriteMany on a class that only does ReadWriteOnce. |
+| VM cannot be migrated after adding a disk | A ReadWriteOnce volume pins the VM to its node. |
+| Data gone after a restart | The VM is ephemeral. |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Create a VM" icon="circle-plus" href="/vms/create">
+    Root partitions, data disks, and the access mode that decides migratability.
+  </Card>
+
+  <Card title="VM lifecycle" icon="rotate" href="/vms/lifecycle">
+    Snapshots, restore, and what deletion takes with it.
+  </Card>
+
+  <Card title="Console & access" icon="terminal" href="/vms/console-and-access">
+    Getting into the guest to format and mount a new disk.
+  </Card>
+
+  <Card title="Permissions" icon="list-check" href="/reference/permissions">
+    `vm:AttachVolume` and `vm:Eject` in the full action list.
+  </Card>
+</CardGroup>

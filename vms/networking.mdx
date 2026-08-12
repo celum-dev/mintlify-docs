@@ -1,0 +1,144 @@
+---
+title: "VM networking"
+description: "Publish VM ports through a LoadBalancer or a Gateway, inspect what the guest is listening on, and give a VM a migration-stable address."
+icon: "network-wired"
+---
+
+A VM gets a pod-network address the moment it starts, reachable from inside the cluster. Everything on this page is about the two further questions: how traffic from outside reaches it, and how its address behaves when it moves.
+
+The VM detail page's **Networking** tab collects the read-only side of this in one view: the internal and external addresses, network mode, MTU and queues, interfaces, routes, the services publishing the VM, and recent bandwidth.
+
+## Permissions
+
+| Task | Action |
+| --- | --- |
+| Publish or unpublish a port, open a guest firewall port | `vm:Expose` |
+| Read the networking tab, listening ports, flows, connectivity check | `vm:Get` |
+| Read VM identity pools | `cilium:GetState` |
+| Create, resize, or delete a VM identity pool | `cilium:Apply` |
+
+All VM actions are scoped to `krn:vks:supervisor:<supervisor>:vm:<vm>`; the pool actions are scoped to `krn:vks:supervisor:<supervisor>:cilium:*`.
+
+## Find out what to publish first
+
+With `qemu-guest-agent` connected, Celum can list what the guest is actually listening on — port, protocol, and the process holding the socket. Each entry is flagged as exposable or not.
+
+<Warning>
+  The exposable flag is **advisory**. A service bound only to localhost can still be published — the publish path validates the port number, not what the port is bound to. The result is a LoadBalancer address that accepts connections and then goes nowhere. Check the bind address before publishing.
+</Warning>
+
+## Publishing through a LoadBalancer
+
+This is the L4 path: a Service named `<vm>-lb` selecting the VM, given an address from the project's LoadBalancer range.
+
+<Tabs>
+  <Tab title="Expose the VM">
+    Publishes a set of ports at once, replacing what was there. With no ports specified, Celum picks defaults from the detected guest OS:
+
+    | Guest | Default ports |
+    | --- | --- |
+    | Windows | RDP `3389` and SSH `22` |
+    | Anything else | SSH `22` |
+
+    Detection reads the guest OS the agent reports — without the agent it falls through to the non-Windows default.
+  </Tab>
+  <Tab title="Add a single port">
+    Merges **one** port into the existing `<vm>-lb` Service, leaving the rest alone. Validated server-side: the port must be 1–65535, the protocol TCP or UDP, and the Service port name is derived from the port number (`port-22`, `port-80`). Unpublishing removes just that port.
+  </Tab>
+</Tabs>
+
+### Opening the guest firewall
+
+Publishing a port through Kubernetes does not open it inside the guest. For guests running `ufw`, Celum can open a single port for you. The command is built server-side from the validated port and protocol — you never supply a shell string.
+
+<Note>
+  Two different firewalls are in play. A published port that still refuses connections is usually blocked by the guest's own firewall, not by Kubernetes.
+</Note>
+
+## Publishing through a Gateway
+
+The L7 alternative. Instead of consuming a LoadBalancer address per VM, the port is routed through a Gateway with TLS terminated by cert-manager and HTTP redirected to HTTPS — the same path platform services use.
+
+The backing Service is a separate ClusterIP named `<vm>-gw`, so it never burns a LoadBalancer address and stays distinct from `<vm>-lb`. You can name a Gateway explicitly; otherwise the VM's own project gateway is used, created if it does not exist yet, falling back to the platform's shared gateway.
+
+<Warning>
+  Gateway publication covers **HTTP over TCP ports only**. SSH and RDP cannot be published this way — use the LoadBalancer path for those.
+</Warning>
+
+### Choosing between the two
+
+| Use the LoadBalancer when | Use the Gateway when |
+| --- | --- |
+| The protocol is not HTTP (SSH, RDP, databases) | The service is a web application |
+| You want a dedicated address for the VM | You want a hostname and a managed certificate |
+| You are debugging raw connectivity | You want to conserve LoadBalancer addresses |
+
+## The VM Identity Network
+
+A VM's pod address is volatile — it changes when the VM restarts or migrates. An **identity address** is a routable address that stays with the VM across live migration.
+
+### How pools work
+
+A VM identity pool is a Cilium LoadBalancer IP pool that is deliberately **disabled** for normal allocation and labelled as an identity pool. Disabling it guarantees Cilium never hands its addresses out to Services, while the BGP bridge still advertises the pool's aggregate to the fabric. The per-VM addresses themselves stay node-internal, which is what lets a VM keep its address when it lands on a different node.
+
+### Claiming an address
+
+A VM claims an address at creation time — see [Create a VM](/vms/create). The claim is allocated before the VM object exists, so a bad or exhausted pool fails cleanly.
+
+### Stale claims
+
+If a pool is later resized so that an already-claimed address falls outside the new range, that VM's claim is marked **stale**. A stale address is no longer advertised, so the VM becomes unreachable on it and must be re-addressed.
+
+<Warning>
+  Shrinking an identity pool strands every claim outside the new range. Check which addresses are in use before resizing.
+</Warning>
+
+## Checking connectivity
+
+When something is unreachable, the connectivity check runs four probes inside the guest and reports each independently — which is usually enough to tell you which layer is broken:
+
+| Probe | What it proves |
+| --- | --- |
+| Reaches the default gateway | The pod network is up on this node |
+| Resolves the in-cluster Kubernetes service | Cluster DNS works from the guest |
+| Reaches the public internet | Egress works — relevant to the project's egress policy |
+| Reaches its own LoadBalancer address | The inbound path resolves end to end |
+
+<Note>
+  All four probes run through the guest agent. Without it the check is unavailable — the endpoint returns `404` rather than a failure result.
+</Note>
+
+For traffic that did happen rather than traffic you provoke, the VM also surfaces its recent flows and its peers, drawn from the same flow analytics that back the security topology.
+
+## What commonly goes wrong
+
+| Symptom | Cause |
+| --- | --- |
+| Published port accepts connections but nothing responds | The guest service is bound to localhost. The listening-ports view flags this, but publishing does not block it. |
+| Published port times out | The guest's own firewall is closed. Open it, or check `ufw` inside the guest. |
+| Expose picked only SSH on a Windows VM | The guest agent was not connected, so the OS could not be detected and the non-Windows default applied. |
+| SSH or RDP will not publish through a Gateway | Gateway publication is HTTP-only. Use the LoadBalancer. |
+| VM lost its address after a migration | It has no identity claim — the pod address does not survive migration. |
+| Identity address stopped working after a pool change | The claim is stale, outside the pool's current range, and no longer advertised. |
+| A moved VM is unreachable | Exposures are not carried across a project move. Re-publish it. |
+| Connectivity check returns `404` | `qemu-guest-agent` is not connected. |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Create a VM" icon="circle-plus" href="/vms/create">
+    Network mode and identity network are set at creation.
+  </Card>
+
+  <Card title="Projects" icon="folder-tree" href="/concepts/projects">
+    Where a VM's LoadBalancer range, egress identity, and isolation come from.
+  </Card>
+
+  <Card title="Console & access" icon="terminal" href="/vms/console-and-access">
+    Reaching a VM that is not published at all.
+  </Card>
+
+  <Card title="VM lifecycle" icon="rotate" href="/vms/lifecycle">
+    Migration, and what a project move leaves behind.
+  </Card>
+</CardGroup>

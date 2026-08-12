@@ -1,0 +1,134 @@
+---
+title: "Console & access"
+description: "Reach a VM through the browser console, and use the guest agent for processes, filesystems, metrics, and logs."
+icon: "terminal"
+---
+
+There are two ways into a VM: the graphical console, which always works while the VM is running, and the guest agent, which unlocks everything else Celum can tell you about the inside of a guest.
+
+## The console
+
+The VM detail page has a **Console** tab that proxies KubeVirt's VNC connection to your browser. It needs no agent, no network publication, and no credentials inside the guest beyond what you would type at a physical screen — which makes it the right tool when a VM has no address, no route, or a broken network configuration.
+
+The tab is available only while the VM is running.
+
+<Warning>
+  `vm:VncProxy` grants **interactive keyboard and screen access to the running guest**, with no further authentication in front of it. Anyone holding it can act as whoever is logged in at the console. Treat it as a privileged grant — it is in `K8sGateOperator` but deliberately not in `K8sGateViewer`.
+</Warning>
+
+## Credentials
+
+Guest credentials are set when the VM is created and are not managed by Celum afterwards:
+
+| Guest | How access is provisioned |
+| --- | --- |
+| Linux | SSH public keys and/or a password, written in by cloud-init at first boot |
+| Windows | An admin password; WinRM is enabled by default so the platform can inspect the guest without a graphical session |
+
+<Note>
+  WinRM is never published through a LoadBalancer. It is reachable on the VM's own address only — from inside the cluster, or over an identity address.
+</Note>
+
+To reach SSH or RDP from outside, publish the port — see [Networking](/vms/networking). The console does not require that.
+
+## The guest agent
+
+`qemu-guest-agent` runs inside the guest and is installed by default on Linux disk images. Its connection state is reported on the VM, and it is the prerequisite for a surprising amount of the product:
+
+| Capability | Without the agent |
+| --- | --- |
+| Guest OS and internal IP reporting | Both stay empty |
+| Graceful shutdown | The guest gets no clean shutdown signal |
+| Snapshot filesystem freeze | Snapshots are crash-consistent only |
+| OS detection when publishing ports | Falls back to the non-Windows default |
+| Listening ports, processes, filesystems, connectivity check | All return `404` |
+| In-guest unmount before detaching a disk | Skipped |
+
+<Note>
+  The agent is reported as disconnected for a stopped VM, because there is no running instance to connect. Check the VM's power state before concluding the agent is missing.
+</Note>
+
+## Introspection
+
+With the agent connected, Celum can look inside the guest. All of these are reads gated by `vm:Get`.
+
+<AccordionGroup>
+  <Accordion title="Listening ports">
+    One entry per listening socket — port, protocol, and the process holding it — with an advisory flag for sockets bound only to localhost. This is the view to consult before publishing a port.
+  </Accordion>
+
+  <Accordion title="Processes">
+    The guest's top processes by CPU. **Linux guests only** — Windows returns `404` and the UI shows a placeholder instead.
+  </Accordion>
+
+  <Accordion title="Filesystems">
+    Per-filesystem used and total bytes as the guest reports them, on the Resources tab. Hidden when the agent is not connected.
+  </Accordion>
+
+  <Accordion title="Connectivity check">
+    Four probes run inside the guest — default gateway, cluster DNS, public internet, and the VM's own LoadBalancer address. See [Networking](/vms/networking).
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  The guest agent runs as root inside the VM, so these endpoints see everything. The commands are fixed server-side — an operator never supplies any part of them — but `vm:Get` still means "can read the process list and open sockets of this VM". Scope it accordingly.
+</Warning>
+
+## Metrics
+
+The Resources tab renders CPU, memory, network, and disk trends from KubeVirt's own metrics, read from the supervisor's Prometheus. They require the monitoring stack to be installed on that supervisor; without it the tiles have no data.
+
+Unlike the introspection endpoints, metrics come from the hypervisor rather than from inside the guest, so they work with or without the agent.
+
+## Logs
+
+Two independent paths, and knowing which one you have determines what you can search for:
+
+| Path | Enabled | Captures |
+| --- | --- | --- |
+| **Serial console** | Always | Kernel boot messages, panics, and early systemd — whatever the guest writes to its serial port. No agent required. |
+| **In-guest agent** | Opt-in at creation | Full journald — system and application logs — pushed to the supervisor's Loki by an agent inside the guest. |
+
+Both land in the same Grafana as pod logs, labelled with the VM name, so a boot failure and an application error are queryable side by side.
+
+<Note>
+  Serial console capture is why a VM that never finishes booting still has something to read. If the guest does not write to its serial port, there will be nothing there — standard cloud images do.
+</Note>
+
+In-guest log shipping is chosen at creation time and applies to Linux cloud-init images. Turning it on also opens the egress path the in-guest agent needs, which is worth knowing if the VM's project has observability egress switched off — see [Projects](/concepts/projects).
+
+## Events
+
+When the problem is that the VM will not start at all, none of the above applies — there is no guest yet. The **Events** tab carries the Kubernetes events for the VM, which is where scheduling failures, image problems, and unbound claims report their actual reason.
+
+## What commonly goes wrong
+
+| Symptom | Cause |
+| --- | --- |
+| Console tab is not offered | The VM is not running. |
+| Introspection endpoints return `404` | The agent is not connected — either never installed, or the VM is stopped. |
+| Process list unavailable on a working VM | The guest is Windows; the process list is Linux-only. |
+| Metrics tiles are empty | The supervisor has no monitoring stack installed. |
+| No in-guest logs, only boot messages | Log shipping was not enabled at creation, so only the serial console is captured. |
+| Log shipping enabled but nothing arrives | The project has observability egress turned off, so the in-guest agent cannot reach Loki. |
+| Can reach the console but not SSH | The port is not published, or the guest firewall is closed. |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Create a VM" icon="circle-plus" href="/vms/create">
+    Guest agent, credentials, and log shipping are all creation-time choices.
+  </Card>
+
+  <Card title="Networking" icon="network-wired" href="/vms/networking">
+    Publishing SSH, RDP, and web ports.
+  </Card>
+
+  <Card title="VM lifecycle" icon="rotate" href="/vms/lifecycle">
+    Why graceful shutdown and consistent snapshots depend on the agent.
+  </Card>
+
+  <Card title="Permissions" icon="list-check" href="/reference/permissions">
+    `vm:VncProxy` and `vm:Get` in the full action list.
+  </Card>
+</CardGroup>
