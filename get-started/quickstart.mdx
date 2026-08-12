@@ -32,6 +32,10 @@ You also need at least one **kubeconfig** for each Cluster API supervisor you wa
   Celum sets the session cookie with the `Secure` flag, so authentication only works over **HTTPS**. Run Celum behind a TLS-terminating reverse proxy and use `https://` URLs throughout — plain HTTP will fail to log in.
 </Warning>
 
+<Note>
+  Angle-bracket values below are placeholders — `<tenant-id>`, `<version>`, `<registry>`, and so on. Substitute the values for your deployment; nothing here is a working default.
+</Note>
+
 ## 1. Configure environment
 
 Create a `.env` file next to your `docker-compose.yml`. Compose interpolates these values into the stack.
@@ -63,14 +67,16 @@ POSTGRES_PASSWORD=<db-password>
   Register `OIDC_REDIRECT_URL` (`https://<your-api-host>/auth/callback`) as a redirect URI on your OIDC application.
 </Note>
 
+Every variable the backend reads is listed in [Environment variables](/reference/environment-variables).
+
 ## 2. Add supervisor kubeconfigs
 
 Place one kubeconfig per supervisor in a `kubeconfigs/` directory next to the compose file. **The filename becomes the supervisor name** shown in the UI.
 
 ```text
 kubeconfigs/
-  talos-waw        # → supervisor "talos-waw"
-  vsphere-prod     # → supervisor "vsphere-prod"
+  <supervisor-a>        # → supervisor "<supervisor-a>"
+  <supervisor-b>        # → supervisor "<supervisor-b>"
 ```
 
 ## 3. Define the stack
@@ -88,7 +94,7 @@ services:
     restart: unless-stopped
 
   backend:
-    image: harbor.internal.nuvira.dev/vks-manager/backend:1.30.215
+    image: <registry>/vks-manager/backend:<version>
     depends_on:
       - db
     environment:
@@ -109,11 +115,10 @@ services:
     restart: unless-stopped
 
   app:
-    image: harbor.internal.nuvira.dev/vks-manager/app:1.30.215
+    image: <registry>/vks-manager/app:<version>
     depends_on:
       - backend
     environment:
-      AUTH_URL: ${FRONTEND_URL}
       BACKEND_URL: http://backend:8080
       BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL}
     restart: unless-stopped
@@ -147,9 +152,19 @@ https://app.example.com
     The root route resolves the first supervisor you can access and redirects to `/s/{supervisor}/`. If you can access none, you land on `/no-access`.
   </Step>
   <Step title="Grant access">
-    With `IAM_ENABLED=true`, access is governed by IAM. Grant yourself the `K8sGateAdmin` policy via a group mapped to your OIDC group — see [Authentication & IAM](/get-started/authentication).
+    With `IAM_ENABLED=true`, access is governed by IAM. A fresh database ships an `Administrators` group carrying the `K8sGateAdmin` policy, mapped to the OIDC claim value `krn:vks:admin` — assign that claim to yourself, or edit the group to match a claim you already have. See [Authentication & IAM](/get-started/authentication).
   </Step>
 </Steps>
+
+## What commonly goes wrong
+
+| Symptom | Cause |
+| --- | --- |
+| Login loops back to the sign-in page | The stack is served over plain HTTP. The session cookie is `Secure`, so the browser never stores it. |
+| `403` on every page after signing in | `IAM_ENABLED=true` and your OIDC claim matches no group. Nothing in IAM grants you anything, so evaluation ends in the default deny. |
+| Everyone is logged out after a restart | `SESSION_SECRET` was left unset, so the backend generated a random one at startup and the old cookies no longer verify. |
+| The supervisor list is empty | No file in `KUBECONFIGS_DIR` and no kubeconfig uploaded to the database. |
+| Backend refuses to start, naming `GITLAB_TOKEN` or `GITLAB_PROJECT_ID` | `GITLAB_URL` is set, which makes both of those mandatory. |
 
 ## Next steps
 
@@ -158,11 +173,15 @@ https://app.example.com
     Configure OIDC mapping and policies in depth.
   </Card>
 
+  <Card title="Supervisors & clusters" icon="layer-group" href="/concepts/supervisors-and-clusters">
+    How Celum discovers supervisors and what it reads from them.
+  </Card>
+
   <Card title="Create a cluster" icon="circle-plus" href="/clusters/create">
     Provision a tenant cluster from a template.
   </Card>
 
-  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
-    How the dashboard, API, and supervisors fit together.
+  <Card title="Environment variables" icon="sliders" href="/reference/environment-variables">
+    Every variable the backend and dashboard read.
   </Card>
 </CardGroup>

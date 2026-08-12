@@ -1,0 +1,127 @@
+---
+title: "Glossary"
+description: "The vocabulary Celum uses — supervisors, KRNs, projects, supercidrs, and the rest."
+icon: "book"
+---
+
+Terms as Celum uses them. Where a word has a broader meaning in the Kubernetes ecosystem, the definition here is the narrower one that applies inside the product.
+
+## Platform
+
+**Supervisor** A Kubernetes cluster running Cluster API that Celum holds a kubeconfig for. The supervisor's name comes from the kubeconfig filename or its database record, and appears in every scoped URL, API path, and KRN. See [Supervisors & clusters](/concepts/supervisors-and-clusters).
+
+**`__default__`** The synthesized supervisor name used when Celum is configured with a single kubeconfig (`KUBECONFIG_PATH`) or runs in-cluster with none. An empty supervisor name in a request resolves to it.
+
+**Tenant cluster** _(also guest cluster)_ A Cluster API `Cluster` object living on a supervisor. Celum reads it from the supervisor rather than keeping its own copy.
+
+**Site** A free-text physical location that supervisors and registries can be tagged with. Descriptive only — it does not affect authorization.
+
+**Project** A namespace named `proj-<name>` plus its own pod CIDR, LoadBalancer range, egress identity, and (by default) an isolation policy. Held entirely in Kubernetes objects. See [Projects](/concepts/projects).
+
+## Cluster API
+
+**Cluster API / CAPI** The upstream Kubernetes project for declarative cluster lifecycle. Celum reads only standard CAPI CRDs, which is why it is provider-agnostic.
+
+**ClusterClass** A CAPI template object defining a cluster's shape and its own variable schema. Celum's ClusterClass creation flow renders its form from that schema.
+
+**Cluster template** A Celum-owned blueprint — files with Go template variables (`{{.ClusterName}}`) that are rendered at creation time. Distinct from a ClusterClass: templates live in Celum's database, ClusterClasses live on the supervisor.
+
+**Cluster addon** An optional component that can be toggled on per tenant cluster and pushed from the supervisor.
+
+**Provider** The infrastructure backend behind a cluster, detected from `spec.infrastructureRef.kind` — never configured by hand.
+
+**vCluster** A virtual cluster running inside a namespace of a host cluster. Celum can install the vCluster component and provision vCluster-backed clusters.
+
+**Kamaji** A hosted control-plane model where tenant control planes run as workloads on the supervisor. Projects have a dedicated switch to open the network path such control planes need.
+
+## Authorization
+
+**KRN** Celum Resource Name — `krn:vks:` followed by alternating type and identifier segments, e.g. `krn:vks:supervisor:<supervisor>:cluster:<cluster>`. The resource half of every permission check.
+
+**Action** A `service:Verb` string such as `cluster:Delete`. The verb half of every check. See [Permissions](/reference/permissions).
+
+**Statement** One `Allow` or `Deny` rule inside a policy, carrying a list of actions and a list of resource KRNs.
+
+**Policy** A versioned document of statements. Attached to groups, never directly to users.
+
+**Managed policy** One of the four built-in policies (`K8sGateAdmin`, `K8sGateOperator`, `K8sGateViewer`, `K8sGateSensitiveRead`), reconciled at startup and read-only in the UI.
+
+**Group** The join between identities and policies. Members arrive either by matching an OIDC claim value or by being added manually by email.
+
+**Unmapped route** An API route with no entry in the permission map. Denied outright when `IAM_ENABLED=true` — no policy can grant it.
+
+**Audit-only mode** `IAM_ENABLED=false`. Decisions are evaluated and logged, denials are allowed through. Not a degraded enforcement mode — no enforcement at all.
+
+## Networking
+
+**Cilium** The CNI Celum manages. Its actions (`cilium:*`) also gate projects, BGP configuration, and egress settings.
+
+**Supercidr** A large range that per-project slices are cut from. There is one for pod CIDRs (owned by Cilium), one for LoadBalancer ranges, and one for egress addresses.
+
+**`NuviraClusterConfig`** The singleton CRD holding a supervisor's egress and LoadBalancer pool configuration. Its presence is what the projects UI reports as `seeded`.
+
+**`CiliumPodIPPool` / `CiliumLoadBalancerIPPool`** The Cilium CRDs holding a project's pod CIDR and LoadBalancer range.
+
+**EGP — `CiliumEgressGatewayPolicy`** The CRD that gives a project a fixed source IP for traffic leaving the cluster, so upstream firewalls can be written per project.
+
+**CNP / CCNP** `CiliumNetworkPolicy` (namespaced) and `CiliumClusterwideNetworkPolicy`. What Celum's isolation and policy features create and read.
+
+**Isolation policy** The default CNP created with a project: namespace default-deny plus a specific set of allowances. Created once and never overwritten, so edits survive re-applies.
+
+**BGP / FRR-K8s** How cluster address ranges are advertised to the physical fabric. FRR-K8s is one of the selectable BGP engines; installing it uses the `cilium:Install` permission.
+
+**Gateway API** The Kubernetes standard for ingress-style routing. Celum manages Gateways, listeners, and their TLS secrets, and can install the Envoy Gateway controller.
+
+**Shared gateway** One `Gateway` object serving many namespaces through a single LoadBalancer IP, with routes attached from other namespaces.
+
+**VM identity pool** An optional per-project CIDR from which each VM claims a routable address that follows it through live migration, with no LoadBalancer involved.
+
+## Operations
+
+**KubeVirt** The virtualization layer behind Celum's VM features. Gated by `virt:*` for installation and `vm:*` for VM lifecycle.
+
+**Golden image** A prepared PVC that new VMs clone from, instead of installing from media.
+
+**Registry / image bucket** A container registry Celum knows about, and its per-supervisor pull configuration.
+
+**Flow** One observed network connection record. Flows are stored in ClickHouse and power the security topology, insights, and forensics views.
+
+**Policy Studio** The UI surface for authoring and inspecting Cilium network policies. It recognises platform-created policies and can filter to them.
+
+**Audit log** The record of every mutating request — user, action, KRN, status, duration — browsable with the `audit-log:List` permission.
+
+## Integrations
+
+**Secret store** Vault or Azure Key Vault, supplying credential-shaped configuration in place of environment variables. The store wins; the environment fills gaps; transport errors fail the boot.
+
+**Flux / HelmRelease** The GitOps engine Celum installs components through. A component's readiness is read from its `HelmRelease` conditions.
+
+**Omni** A read-only Talos management integration. When unconfigured, Celum falls back to reading pod CIDRs from node specs.
+
+**phpIPAM** An external IP address management system Celum can synchronize address plans with.
+
+**Dex** An identity broker Celum can point Grafana at instead of the upstream OIDC endpoints.
+
+**API token** A Bearer token issued from **My permissions** for API clients, used instead of the session cookie. Carries the issuing user's permissions.
+
+**MCP** The Model Context Protocol endpoint at `/mcp`, off unless `MCP_ENABLED=true`. Authorized per tool rather than by the route permission map.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Supervisors & clusters" icon="layer-group" href="/concepts/supervisors-and-clusters">
+    The two nouns everything else hangs off.
+  </Card>
+
+  <Card title="Projects" icon="folder-tree" href="/concepts/projects">
+    Namespaces, supercidrs, EGPs, and isolation in context.
+  </Card>
+
+  <Card title="Permissions" icon="list-check" href="/reference/permissions">
+    Every action and KRN.
+  </Card>
+
+  <Card title="Environment variables" icon="sliders" href="/reference/environment-variables">
+    Where the integrations above are configured.
+  </Card>
+</CardGroup>

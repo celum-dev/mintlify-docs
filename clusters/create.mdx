@@ -1,0 +1,157 @@
+---
+title: "Create a cluster"
+description: "Provision a tenant cluster from a form, a Cluster API class, or a reusable template — with a preview before anything is created."
+icon: "circle-plus"
+---
+
+Celum provisions tenant clusters on a supervisor. You describe the cluster, review a generated preview, and confirm — Celum then creates it.
+
+## Prerequisites
+
+- **Permission**: `cluster:Create` on `krn:vks:supervisor:<supervisor>:cluster:*`. The preview step additionally needs `cluster:Preview`, and the form's dropdowns are populated by `discovery:*` reads.
+- A supervisor whose kubeconfig Celum can reach, with Cluster API installed.
+- For the template flow, at least one cluster template defined under **Settings → Cluster templates**.
+- For the ClusterClass flow, at least one `ClusterClass` present on the supervisor.
+
+<Note>
+  `<supervisor>` and `<cluster>` are placeholders throughout — substitute your own names.
+</Note>
+
+## Creation flows
+
+There are three entry points, all reachable from a supervisor:
+
+<CardGroup cols={1}>
+  <Card title="From a template" icon="copy">
+    `/s/<supervisor>/create-from-template` — a guided wizard over a predefined template. Best for standardized, repeatable clusters.
+  </Card>
+
+  <Card title="Standard form" icon="pen-to-square">
+    `/s/<supervisor>/clusters/create` — fill cluster settings directly and preview the generated configuration.
+  </Card>
+
+  <Card title="Cluster API class" icon="cubes">
+    `/s/<supervisor>/clusters/create-capi` — spawn a cluster from a ClusterClass whose fields are driven by the class's own variable schema; applied directly to the supervisor.
+  </Card>
+</CardGroup>
+
+## Template wizard
+
+<Steps>
+  <Step title="Select a template">
+    Choose from the templates available for the supervisor.
+  </Step>
+  <Step title="Name the cluster">
+    Provide a cluster name (a DNS label, max 63 chars) and namespace.
+  </Step>
+  <Step title="Fill variables">
+    Set the template's variables. Known types (storage class, Kubernetes version, etc.) are offered as supervisor-aware dropdowns.
+  </Step>
+  <Step title="Define workers">
+    Set control-plane replicas (an odd number for etcd quorum) and one or more worker groups.
+  </Step>
+  <Step title="Review & create">
+    Preview the generated configuration, then confirm to create the cluster.
+  </Step>
+</Steps>
+
+### Template variables
+
+Templates are rendered with Go templating (`{{.VariableName}}`). Every template can use these **built-in variables** without declaring them:
+
+<Columns cols={2}>
+  <div>
+  * `ClusterName`
+  * `Supervisor`
+  * `SupervisorServerUrl`
+  * `SupervisorNamespace`
+  * `Namespace`
+  * `SourceRepo`
+  * `KubernetesVersion`
+  * `ClusterClass`
+</div>
+
+  <div>
+  * `StorageClass`
+  * `ControlPlaneReplicas`
+  * `ControlPlaneVmClass`
+  * `Environment`
+  * `Domain`
+  * `PodsCIDR`
+  * `ServicesCIDR`
+  * `ServiceDomain`
+</div>
+</Columns>
+
+**Custom variables** are defined per template, each with a `name`, `label`, `default`, and `description`, and surfaced as form fields in the wizard.
+
+## What you configure
+
+Whichever flow you use, a cluster is described by fields such as:
+
+| Group | Fields |
+| --- | --- |
+| Identity | cluster name, environment (`dev`/`staging`/`prod`), region |
+| Kubernetes | version, cluster class |
+| Storage | storage class |
+| Network | domain, pods CIDR (default `10.244.0.0/16`), services CIDR (default `10.96.0.0/12`), service domain |
+| Control plane | replica count (odd) |
+| Worker groups | per group: name, machine class, VM class, replicas |
+| Applications | the platform apps to enable |
+
+Talos-based classes additionally take an image (golden PVC or VM template) and VM sizing.
+
+## Preview and create
+
+Both the standard and template flows generate the cluster configuration and show it to you **before** anything is created:
+
+<Steps>
+  <Step title="Preview">
+    Celum renders the full set of configuration files for the cluster and lists them for review. Nothing is created yet.
+  </Step>
+  <Step title="Confirm">
+    On confirm, the cluster is created on the supervisor and appears in the cluster list.
+  </Step>
+</Steps>
+
+<Note>
+  Pod and service CIDRs are checked against existing clusters on the supervisor. If they would overlap, creation is rejected and fresh non-overlapping subnets are generated automatically.
+</Note>
+
+## Verify it worked
+
+The new cluster appears at `/s/<supervisor>/clusters`. Watch it move through its Cluster API phase (`Provisioning` → `Provisioned`) and its control-plane and worker replica counts converge on the desired numbers. Open the cluster to see its nodes, API server endpoint, and the pod/service CIDRs that were actually assigned.
+
+## What commonly goes wrong
+
+| Symptom | Cause |
+| --- | --- |
+| `403` before the form loads | Missing `cluster:Create` on the target supervisor, or the dropdown reads (`discovery:*`) are denied so the form cannot populate. |
+| Creation rejected for overlapping CIDRs | Another cluster on the same supervisor already claims that pod or service range. Celum generates replacement subnets — re-preview before confirming. |
+| Cluster stays in `Provisioning` | Cluster API is waiting on the infrastructure provider. The cluster's events page (`/s/<supervisor>/clusters/<cluster>/events`) carries the provider's own reason. |
+| No cluster classes offered | The ClusterClass flow needs classes installed on that supervisor; a supervisor without Cluster API installed has none. |
+| Control plane never reaches quorum | Control-plane replicas set to an even number. Use an odd count. |
+
+## Providers
+
+Templates carry a provider (`generic`, `tanzu`, or `talos`), and Celum auto-detects a cluster's provider from its Cluster API `infrastructureRef`. vSphere (VKS/TKGs) and CloudStack are tested; other CAPI providers are compatible.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Supervisors & clusters" icon="layer-group" href="/concepts/supervisors-and-clusters">
+    What a supervisor is and what Celum reads from each cluster.
+  </Card>
+
+  <Card title="Permissions reference" icon="list-check" href="/reference/permissions">
+    Every `cluster:*` action and the KRN it is checked against.
+  </Card>
+
+  <Card title="Projects" icon="folder-tree" href="/concepts/projects">
+    The namespace \+ address-space abstraction clusters are placed into.
+  </Card>
+
+  <Card title="Authentication & IAM" icon="key" href="/get-started/authentication">
+    The `cluster:Create` permission that gates this flow.
+  </Card>
+</CardGroup>

@@ -1,0 +1,204 @@
+---
+title: "Environment variables"
+description: "Every variable the Celum backend and dashboard read, with defaults, fallbacks, and which ones can come from a secret store."
+icon: "sliders"
+---
+
+Celum is configured entirely through the environment. This page lists what the backend and the dashboard actually read — nothing here is aspirational, and anything absent from this page is ignored if you set it.
+
+<Note>
+  Values in angle brackets are placeholders. Defaults shown as — mean the variable is empty unless you set it, and the feature it belongs to stays off.
+</Note>
+
+## Core
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `8080` | Port the API listens on |
+| `DATABASE_URL` | — | PostgreSQL connection string. Without it there is no IAM evaluator, so authorization passes through. |
+| `KUBECONFIGS_DIR` | `/app/kubeconfigs` | Directory of supervisor kubeconfigs; **each filename becomes a supervisor name** |
+| `KUBECONFIG_PATH` | — | Single-kubeconfig fallback, surfaced as the `__default__` supervisor |
+
+<Note>
+  With neither variable set and Celum running inside Kubernetes, it falls back to its own in-cluster service account — again as `__default__`.
+</Note>
+
+## Authentication
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OIDC_ISSUER` | — | Discovery URL. Auto-built as `https://login.microsoftonline.com/<tenant>/v2.0` when unset and `AZURE_AD_TENANT_ID` is present. |
+| `OIDC_CLIENT_ID` | — | Falls back to `AZURE_AD_CLIENT_ID` |
+| `OIDC_CLIENT_SECRET` | — | Falls back to `AZURE_AD_CLIENT_SECRET` |
+| `OIDC_REDIRECT_URL` | — | `https://<api-host>/auth/callback`, registered with your provider |
+| `OIDC_MAPPING_SOURCE` | `groups` | Which claim maps to IAM groups: `groups` or `roles` |
+| `OIDC_GROUPS_CLAIM` | derived | Explicit claim-name override; takes precedence over `OIDC_MAPPING_SOURCE` |
+| `SESSION_SECRET` | generated | HMAC key for session JWTs |
+| `SESSION_MAX_AGE` | `86400` | Session lifetime in seconds |
+| `FRONTEND_URL` | `http://localhost:3000` | Redirect target after login and logout |
+| `COOKIE_DOMAIN` | — | Cookie domain, e.g. `.example.com` for cross-subdomain sessions |
+| `AUTH_DISABLED` | `false` | **Development only.** Injects a mock admin and skips token validation. |
+| `AZURE_AD_TENANT_ID` | — | Used to construct `OIDC_ISSUER` and as the Azure Key Vault tenant fallback |
+
+<Warning>
+  Leaving `SESSION_SECRET` unset does not fail the boot — the backend generates a random key and logs a warning. Every session is then invalidated on restart. Set it explicitly in any deployment you expect to restart.
+</Warning>
+
+## Authorization
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `IAM_ENABLED` | `false` | `true` enforces policies; anything else logs would-be denials and allows the request |
+| `IAM_DEBUG` | `false` | Logs each check with the resolved action, KRN, and matching statement |
+
+## GitOps
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GITLAB_URL` | — | GitLab instance URL |
+| `GITLAB_TOKEN` | — | Private access token |
+| `GITLAB_PROJECT_ID` | — | Numeric project ID |
+| `GITLAB_BRANCH` | `hitachi` | Target branch for cluster commits |
+| `GITHUB_TOKEN` | — | Optional PAT for the GitHub Releases API used by version pickers. Unset means anonymous rate limits. No scopes needed for public repositories. |
+
+<Warning>
+  Setting `GITLAB_URL` makes `GITLAB_TOKEN` and `GITLAB_PROJECT_ID` **mandatory** — the backend refuses to start without them, naming the missing one.
+</Warning>
+
+## Observability
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP/HTTP endpoint. Empty installs a no-op tracer, so there is no cost when unconfigured. |
+| `OTEL_SERVICE_NAME` | `celum-backend` | Service name on emitted spans |
+| `LOG_FORMAT` | auto | `text`, `json`, or empty for text on a TTY |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
+
+## Integrations
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ARGOCD_CLIENT_ID` | — | Argo CD OIDC client ID |
+| `ARGOCD_CLIENT_SECRET` | — | Argo CD OIDC client secret |
+| `ARGOCD_ADMIN_GROUP_ID` | built-in | Group granted Argo CD admin. Ships with a default value — **set it for your tenant**. |
+| `GODADDY_API_KEY` | — | GoDaddy DNS API key |
+| `GODADDY_API_SECRET` | — | GoDaddy DNS API secret |
+| `GODADDY_BASE_URL` | — | GoDaddy API base URL |
+| `ACME_EMAIL` | built-in | Registration address for Let's Encrypt. Ships with a default — set your own. |
+| `DEX_ISSUER_URL` | built-in | Central Dex broker used when Grafana authentication is routed through Dex. Empty disables the option. |
+| `OMNI_API_URL` | — | Omni gRPC endpoint. Empty disables the integration and the wizard falls back to detecting pod CIDRs from node specs. |
+| `OMNI_SERVICE_ACCOUNT_KEY` | — | Base64 PGP service-account key for Omni |
+| `PHPIPAM_URL` | — | phpIPAM base URL |
+| `PHPIPAM_APP_ID` | — | phpIPAM application ID |
+| `PHPIPAM_TOKEN` | — | phpIPAM API token |
+| `PHPIPAM_SITE` | — | phpIPAM site |
+| `PHPIPAM_SECTION` | — | phpIPAM section |
+| `MCP_ENABLED` | `false` | Mounts the Model Context Protocol endpoint at `/mcp`, authenticated by Bearer token |
+
+## Secret store
+
+Credential-shaped values can come from Vault or Azure Key Vault instead of the environment. Set `SECRET_BACKEND` to switch it on.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SECRET_BACKEND` | — | `vault`, `azure-kv`, or empty for environment-only |
+| `SECRETS_OPTIONAL` | `false` | `true` lets the boot continue when the store is unreachable. **Development and CI only.** |
+
+<Tabs>
+  <Tab title="Vault">
+    | Variable | Default | Purpose |
+    | --- | --- | --- |
+    | `VAULT_ADDR` | — | **Required.** Vault address. |
+    | `VAULT_ROLE_ID` | — | **Required.** AppRole role ID. |
+    | `VAULT_SECRET_ID` | — | **Required.** AppRole secret ID. |
+    | `VAULT_KV_MOUNT` | `celum` | KV v2 secrets-engine mount — the first path segment. |
+    | `VAULT_APPROLE_PATH` | `approle` | AppRole auth-method mount. |
+    | `VAULT_BOOT_TIMEOUT` | `120s` | Total retry budget for the initial connection. |
+    | `VAULT_WRITE_ROLE_ID` | read pair | Optional separate credential for the write path. |
+    | `VAULT_WRITE_SECRET_ID` | read pair | Optional separate credential for the write path. |
+  </Tab>
+  <Tab title="Azure Key Vault">
+    | Variable | Default | Purpose |
+    | --- | --- | --- |
+    | `AZURE_KEYVAULT_URL` | — | **Required.** `https://<name>.vault.azure.net/` |
+    | `AZURE_TENANT_ID` | — | **Required**, falls back to `AZURE_AD_TENANT_ID`. |
+    | `AZURE_CLIENT_ID` | — | **Required.** |
+    | `AZURE_CLIENT_SECRET` | — | **Required.** |
+    | `AZURE_KEYVAULT_PREFIX` | `celum` | Leading segment of every secret name — Key Vault's equivalent of a mount. |
+  </Tab>
+</Tabs>
+
+### Which values the store resolves
+
+| Variable | Path in the store | Key |
+| --- | --- | --- |
+| `SESSION_SECRET` | `backend/session` | `secret` |
+| `OIDC_CLIENT_SECRET` | `backend/oidc` | `client_secret` |
+| `GITLAB_TOKEN` | `backend/gitlab` | `token` |
+| `GITHUB_TOKEN` | `backend/github` | `token` |
+| `ARGOCD_CLIENT_SECRET` | `backend/argocd` | `client_secret` |
+| `GODADDY_API_KEY` | `backend/godaddy` | `api_key` |
+| `GODADDY_API_SECRET` | `backend/godaddy` | `api_secret` |
+| `OMNI_SERVICE_ACCOUNT_KEY` | `backend/omni` | `service_account_key` |
+| `PHPIPAM_APP_ID` | `backend/phpipam` | `app_id` |
+| `PHPIPAM_TOKEN` | `backend/phpipam` | `token` |
+
+Under Vault the mount is prepended, so `backend/gitlab` is read from `celum/backend/gitlab` by default. Non-credential values — URLs, IDs, site and section names — stay in the environment.
+
+### Precedence
+
+<Steps>
+  <Step title="The store wins">
+    A non-empty value from the store is used, and the environment variable is ignored.
+  </Step>
+  <Step title="Absent or empty falls back to the environment">
+    A missing secret, or one present but empty, falls through to the environment variable. A mistyped path therefore degrades to the old value rather than blanking the credential.
+  </Step>
+  <Step title="Any other error fails the boot">
+    Denied, sealed, or unreachable stops the backend from starting. It does not fall back — booting with empty credentials would log everyone out and break integrations silently.
+  </Step>
+</Steps>
+
+One log line at startup names every credential and where it came from — `env`, `env(fallback)`, the backend name, or `ERROR`. Names and sources only, never values. Check it when a hotfix value you set in the environment appears to have no effect: store-wins means it was ignored.
+
+<Warning>
+  With a store configured, an empty session secret is a **boot failure**, not a warning. Auto-generating one would invalidate every session on each restart, so the backend refuses to start until `backend/session#secret` exists.
+</Warning>
+
+## Dashboard
+
+The Next.js dashboard reads a much smaller set:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BACKEND_URL` | — | Internal API URL for server-side fetches, e.g. `http://backend:8080` |
+| `BACKEND_PUBLIC_URL` | — | Public API URL, injected into the browser at request time. Falls back to `BACKEND_URL`, then `http://localhost:8080`. |
+| `AUTH_DISABLED` | `false` | Mirrors the backend flag for development |
+| `APP_VERSION` | — | Version string shown in the UI |
+| `GITLAB_BRANCH` | — | Branch shown in GitOps views |
+| `KUBECONFIGS_DIR` | — | Used by server-side kubeconfig reads |
+| `KUBECONFIG_PATH` | — | Single-kubeconfig fallback |
+
+<Note>
+  `BACKEND_PUBLIC_URL` is injected at request time rather than baked in at build time, so one image runs against any environment. No `NEXT_PUBLIC_` variables are used.
+</Note>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/get-started/quickstart">
+    A working Compose stack using these variables.
+  </Card>
+
+  <Card title="Authentication & IAM" icon="key" href="/get-started/authentication">
+    What the OIDC variables do in the sign-in flow.
+  </Card>
+
+  <Card title="Permissions model" icon="shield-halved" href="/concepts/permissions-model">
+    `IAM_ENABLED` and `IAM_DEBUG` in context.
+  </Card>
+
+  <Card title="Glossary" icon="book" href="/reference/glossary">
+    Terms used across these settings.
+  </Card>
+</CardGroup>

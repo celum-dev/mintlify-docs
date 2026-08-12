@@ -14,17 +14,7 @@
     "dark": "/images/icon-64.png"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:support@virtcloud.io"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.virtcloud.io"
-    }
+    "links": []
   },
   "navigation": {
     "tabs": [
@@ -34,34 +24,69 @@
           {
             "group": "Get Started",
             "pages": [
-              "introduction",
-              "authentication",
-              "quickstart"
+              "quickstart",
+              "get-started/introduction",
+              "get-started/authentication",
+              "get-started/quickstart"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/supervisors-and-clusters",
+              "concepts/projects",
+              "concepts/permissions-model"
             ]
           },
           {
             "group": "Clusters",
             "pages": [
-              "add-cluster"
+              "clusters/create"
             ]
           },
           {
-            "group": "Concepts",
-            "pages": []
+            "group": "Reference",
+            "icon": "book",
+            "pages": [
+              "reference/permissions",
+              "reference/environment-variables",
+              "reference/glossary"
+            ]
           }
         ]
-      },
-      {
-        "tab": "API Reference"
       }
     ]
   },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/celum-dev"
-    }
-  },
   "icons": {
     "library": "fontawesome"
-  }
+  },
+  "description": "Operator documentation for Celum — the multi-supervisor Kubernetes management platform.",
+  "redirects": [
+    {
+      "source": "/introduction",
+      "destination": "/get-started/introduction",
+      "permanent": true
+    },
+    {
+      "source": "/quickstart",
+      "destination": "/get-started/quickstart",
+      "permanent": true
+    },
+    {
+      "source": "/authentication",
+      "destination": "/get-started/authentication",
+      "permanent": true
+    },
+    {
+      "source": "/add-cluster",
+      "destination": "/clusters/create",
+      "permanent": true
+    },
+    {
+      "source": "/",
+      "destination": "/get-started/introduction",
+      "permanent": false
+    }
+  ]
 }

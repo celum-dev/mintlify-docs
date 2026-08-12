@@ -1,0 +1,511 @@
+---
+title: "Permissions"
+description: "Every IAM action Celum defines, grouped by service, with the KRN each is checked against."
+icon: "list-check"
+---
+
+This is the complete set of IAM actions — **184 actions across 36 services**. Use it to write policy statements; see [Permissions model](/concepts/permissions-model) for how matching works.
+
+## How to read this page
+
+Every row is an action and the KRN template the request is checked against. Braces mark values filled in from the request:
+
+| Placeholder | Filled from |
+| --- | --- |
+| `{name}` | The supervisor name in the URL path |
+| `{cluster}`, `{vm}`, `{release}`, `{issuer}` | The corresponding path segment |
+| `{id}` | The object's database ID |
+| `{?supervisor}` | The `?supervisor` **query parameter** |
+
+<Warning>
+  `{?supervisor}` resolves to `*` when the query parameter is absent — so those routes are checked against `krn:vks:supervisor:*:...`. Any policy meant to restrict them must be scoped by the _other_ segments, not by the supervisor.
+</Warning>
+
+Where a row lists more than one KRN, different routes share the action at different scopes. A policy needs to cover whichever one the route you care about uses.
+
+## Wildcards
+
+```json
+{ "actions": ["cluster:List"] }   // one action
+{ "actions": ["cluster:*"] }      // every action in the cluster service
+{ "actions": ["*:*"] }            // everything
+```
+
+## Not on this page
+
+A handful of routes bypass IAM entirely and cannot be granted or denied by policy: the health check, the `/auth/*` endpoints, and everything under `/api/iam/me/` — your own permissions, groups, and API tokens. The MCP endpoint at `/mcp` is authorized per tool instead.
+
+Routes that appear in neither place are **unmapped**, and unmapped routes are denied outright when `IAM_ENABLED=true`.
+
+## Actions by service
+
+### ai
+
+The assistant and its stored conversations.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `ai:Chat` | `krn:vks:ai:chat` |
+| `ai:DeleteConversation` | `krn:vks:ai:conversation:{id}` |
+| `ai:GetConversation` | `krn:vks:ai:conversation:{id}` |
+| `ai:ListConversations` | `krn:vks:ai:conversation:*` |
+| `ai:UpdateConversation` | `krn:vks:ai:conversation:{id}` |
+
+### app
+
+Platform application definitions — the catalog rendered onto clusters.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `app:Create` | `krn:vks:app:*` |
+| `app:Delete` | `krn:vks:app:{id}` |
+| `app:Export` | `krn:vks:app:*` |
+| `app:Get` | `krn:vks:app:{id}` |
+| `app:HelmCheck` | `krn:vks:app:*` |
+| `app:Import` | `krn:vks:app:*` |
+| `app:List` | `krn:vks:app:*` |
+| `app:Render` | `krn:vks:app:*` |
+| `app:Update` | `krn:vks:app:{id}` |
+
+### argocd
+
+Argo CD discovery and onboarding.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `argocd:GetConfig` | `krn:vks:argocd:*` |
+| `argocd:List` | `krn:vks:argocd:*` |
+| `argocd:ListDetailed` | `krn:vks:argocd:*` |
+| `argocd:Onboard` | `krn:vks:argocd:*` |
+
+### argocd-appset
+
+Argo CD ApplicationSets.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `argocd-appset:Create` | `krn:vks:argocd-appset:*` |
+| `argocd-appset:Delete` | `krn:vks:argocd-appset:{name}` |
+| `argocd-appset:Get` | `krn:vks:argocd-appset:{name}` |
+| `argocd-appset:List` | `krn:vks:argocd-appset:*` |
+| `argocd-appset:Update` | `krn:vks:argocd-appset:{name}` |
+
+### audit-log
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `audit-log:List` | `krn:vks:audit-log:*` |
+
+### capi
+
+Cluster API provider installation and status, including ClusterClasses and addons.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `capi:GetStatus` | `krn:vks:capi:*` `krn:vks:supervisor:{name}:capi:*` |
+| `capi:Install` | `krn:vks:capi:*` `krn:vks:supervisor:{name}:capi:*` |
+
+### ceph
+
+Rook-Ceph discovery, status, and operator install.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `ceph:Discover` | `krn:vks:supervisor:{name}:ceph:*` |
+| `ceph:GetStatus` | `krn:vks:supervisor:{name}:ceph:*` |
+| `ceph:InstallOperator` | `krn:vks:supervisor:{name}:ceph:*` |
+
+### certs
+
+cert-manager, its issuers, and the certificates they hold.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `certs:GetStatus` | `krn:vks:supervisor:{name}:certs:*` |
+| `certs:Install` | `krn:vks:supervisor:{name}:certs:*` |
+
+### cilium
+
+The CNI itself — install, configuration, BGP, egress HA — **and projects**, whose routes are gated by these same actions.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `cilium:Apply` | `krn:vks:supervisor:{name}:cilium:*` |
+| `cilium:GetDefaults` | `krn:vks:cilium:*` `krn:vks:supervisor:{name}:cilium:*` |
+| `cilium:GetState` | `krn:vks:supervisor:{name}:cilium:*` |
+| `cilium:Install` | `krn:vks:supervisor:{name}:cilium:*` |
+
+<Note>
+  `cilium:Install` also covers installing the FRR-K8s BGP engine, and `cilium:Apply` covers project create/update/delete and FRR configuration. There is no separate `project:*` or `frrk8s:*` service.
+</Note>
+
+### cloud-init-template
+
+Reusable cloud-init documents for VM provisioning.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `cloud-init-template:Create` | `krn:vks:cloud-init-template:*` |
+| `cloud-init-template:Delete` | `krn:vks:cloud-init-template:{id}` |
+| `cloud-init-template:Get` | `krn:vks:cloud-init-template:{id}` |
+| `cloud-init-template:List` | `krn:vks:cloud-init-template:*` |
+| `cloud-init-template:Update` | `krn:vks:cloud-init-template:{id}` |
+
+### cluster
+
+Tenant cluster lifecycle and reads. Note the three credential actions.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `cluster:ApplyManifests` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` |
+| `cluster:Create` | `krn:vks:cluster-template:{id}` `krn:vks:supervisor:{?supervisor}:cluster:*` `krn:vks:supervisor:{name}:cluster:*` |
+| `cluster:Delete` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` `krn:vks:supervisor:{name}:cluster:{cluster}` |
+| `cluster:Get` | `krn:vks:supervisor:{name}:cluster:{cluster}` |
+| `cluster:GetEvents` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` |
+| `cluster:GetHealth` | `krn:vks:supervisor:{?supervisor}:cluster:*` |
+| `cluster:GetIngresses` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` |
+| `cluster:GetKubeconfig` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` |
+| `cluster:GetLBServices` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` `krn:vks:supervisor:{name}:cluster:{cluster}` |
+| `cluster:GetNodes` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` |
+| `cluster:GetResources` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` `krn:vks:supervisor:{name}:cluster:{cluster}` |
+| `cluster:GetSshPassword` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` |
+| `cluster:GetTalosconfig` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` |
+| `cluster:GetWorkloads` | `krn:vks:supervisor:{?supervisor}:cluster:{name}` |
+| `cluster:List` | `krn:vks:supervisor:{?supervisor}:cluster:*` |
+| `cluster:Preview` | `krn:vks:supervisor:{?supervisor}:cluster:*` |
+| `cluster:Update` | `krn:vks:supervisor:{name}:cluster:{cluster}` |
+
+<Warning>
+  `cluster:GetKubeconfig`, `cluster:GetTalosconfig`, and `cluster:GetSshPassword` hand out working credentials for the tenant cluster. They are deliberately excluded from `K8sGateOperator` and `K8sGateViewer` — grant them through `K8sGateSensitiveRead` to named people.
+</Warning>
+
+### cluster-addon
+
+Addon definitions and their per-cluster enablement.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `cluster-addon:Create` | `krn:vks:cluster-addon:*` |
+| `cluster-addon:Delete` | `krn:vks:cluster-addon:{id}` |
+| `cluster-addon:Get` | `krn:vks:cluster-addon:{id}` |
+| `cluster-addon:Import` | `krn:vks:cluster-addon:*` |
+| `cluster-addon:List` | `krn:vks:cluster-addon:*` |
+| `cluster-addon:Push` | `krn:vks:supervisor:{name}` |
+| `cluster-addon:Toggle` | `krn:vks:supervisor:{name}:cluster:{cluster}` |
+| `cluster-addon:Update` | `krn:vks:cluster-addon:{id}` |
+
+### cluster-template
+
+The blueprints cluster creation renders from.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `cluster-template:Create` | `krn:vks:cluster-template:*` |
+| `cluster-template:Delete` | `krn:vks:cluster-template:{id}` |
+| `cluster-template:Get` | `krn:vks:cluster-template:{id}` |
+| `cluster-template:List` | `krn:vks:cluster-template:*` |
+| `cluster-template:Update` | `krn:vks:cluster-template:{id}` |
+
+### database
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `database:Backup` | `krn:vks:system:database` |
+
+### discovery
+
+Read-only lookups that populate form dropdowns. Denying these leaves creation forms empty rather than returning an obvious error.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `discovery:CheckArgoCD` | `krn:vks:supervisor:{name}:discovery:*` |
+| `discovery:GetLBAddress` | `krn:vks:supervisor:{name}:discovery:*` |
+| `discovery:ListAvailabilityZones` | `krn:vks:supervisor:{name}:discovery:*` |
+| `discovery:ListClusterClasses` | `krn:vks:supervisor:{?supervisor}:discovery:*` `krn:vks:supervisor:{name}:discovery:*` |
+| `discovery:ListInstanceTypes` | `krn:vks:supervisor:{name}:discovery:*` |
+| `discovery:ListNamespaces` | `krn:vks:supervisor:{name}:discovery:*` |
+| `discovery:ListPVCs` | `krn:vks:supervisor:{name}:discovery:*` |
+| `discovery:ListStorageClasses` | `krn:vks:supervisor:{name}:discovery:*` |
+| `discovery:ListVmClasses` | `krn:vks:supervisor:{name}:discovery:*` |
+| `discovery:ListVolumeSnapshots` | `krn:vks:supervisor:{name}:discovery:*` |
+
+### domain
+
+DNS domains available for ingress and gateway publication.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `domain:Create` | `krn:vks:domain:*` |
+| `domain:Delete` | `krn:vks:domain:{id}` |
+| `domain:List` | `krn:vks:domain:*` |
+
+### gateway
+
+Gateway API objects, listeners, TLS secrets, and the Envoy Gateway controller.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `gateway:Create` | `krn:vks:supervisor:{name}:gateway:*` |
+| `gateway:Delete` | `krn:vks:supervisor:{name}:gateway:*` |
+| `gateway:List` | `krn:vks:supervisor:{name}:gateway:*` |
+
+### gitlab-app
+
+GitOps application entries committed to the GitLab repository.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `gitlab-app:Add` | `krn:vks:gitlab:{name}` |
+| `gitlab-app:AddPackage` | `krn:vks:gitlab:{name}` |
+| `gitlab-app:List` | `krn:vks:gitlab:*` `krn:vks:gitlab:{name}` |
+| `gitlab-app:Remove` | `krn:vks:gitlab:{name}` |
+
+### helm-release
+
+Helm releases inside a tenant cluster.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `helm-release:GetValues` | `krn:vks:supervisor:{?supervisor}:cluster:{name}:helm-release:{release}` |
+| `helm-release:Install` | `krn:vks:supervisor:{?supervisor}:cluster:{name}:helm-release:*` |
+| `helm-release:List` | `krn:vks:supervisor:{?supervisor}:cluster:{name}:helm-release:*` |
+| `helm-release:Uninstall` | `krn:vks:supervisor:{?supervisor}:cluster:{name}:helm-release:{release}` |
+| `helm-release:Upgrade` | `krn:vks:supervisor:{?supervisor}:cluster:{name}:helm-release:{release}` |
+
+### iam
+
+Policies, groups, and group membership. Granting any of these is granting the ability to grant.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `iam:AddGroupMember` | `krn:vks:iam:group:{id}` |
+| `iam:AttachGroupPolicy` | `krn:vks:iam:group:{id}` |
+| `iam:CreateGroup` | `krn:vks:iam:*` |
+| `iam:CreatePolicy` | `krn:vks:iam:*` |
+| `iam:DeleteGroup` | `krn:vks:iam:group:{id}` |
+| `iam:DeletePolicy` | `krn:vks:iam:policy:{id}` |
+| `iam:DetachGroupPolicy` | `krn:vks:iam:group:{id}` |
+| `iam:GetPolicy` | `krn:vks:iam:group:{id}` `krn:vks:iam:policy:{id}` |
+| `iam:ListGroupMembers` | `krn:vks:iam:group:{id}` |
+| `iam:ListGroups` | `krn:vks:iam:*` |
+| `iam:ListPolicies` | `krn:vks:iam:*` |
+| `iam:RemoveGroupMember` | `krn:vks:iam:group:{id}` |
+| `iam:UpdateGroup` | `krn:vks:iam:group:{id}` |
+| `iam:UpdatePolicy` | `krn:vks:iam:policy:{id}` |
+
+<Warning>
+  `iam:AttachGroupPolicy` plus `iam:AddGroupMember` is effectively full access: the holder can attach `K8sGateAdmin` to a group and add themselves to it.
+</Warning>
+
+### kubeconfig
+
+Supervisor kubeconfigs stored in the database.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `kubeconfig:Check` | `krn:vks:kubeconfig:*` `krn:vks:kubeconfig:{id}` |
+| `kubeconfig:Delete` | `krn:vks:kubeconfig:{id}` |
+| `kubeconfig:Download` | `krn:vks:kubeconfig:{id}` |
+| `kubeconfig:List` | `krn:vks:kubeconfig:*` |
+| `kubeconfig:Toggle` | `krn:vks:kubeconfig:{id}` |
+| `kubeconfig:Upload` | `krn:vks:kubeconfig:*` |
+
+<Warning>
+  `kubeconfig:Download` returns admin credentials for a **supervisor**, not a tenant cluster. Only `K8sGateAdmin` carries it among the built-in policies.
+</Warning>
+
+### monitoring
+
+The observability stack — Prometheus, Loki, Alloy, ClickHouse, and the flow pipeline all share these two actions.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `monitoring:GetStatus` | `krn:vks:supervisor:{name}:monitoring:*` |
+| `monitoring:Install` | `krn:vks:supervisor:{name}:monitoring:*` |
+
+### oidc
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `oidc:GetMetadata` | `krn:vks:oidc:*` |
+
+### platform
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `platform:GetDefaults` | `krn:vks:platform:charts` |
+
+### registry
+
+Container registries and per-supervisor image buckets.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `registry:Create` | `krn:vks:registry:*` `krn:vks:registry:image-bucket:*` |
+| `registry:Delete` | `krn:vks:registry:image-bucket:{supervisor}:{name}` `krn:vks:registry:{id}` |
+| `registry:Get` | `krn:vks:registry:{id}` |
+| `registry:List` | `krn:vks:registry:*` `krn:vks:registry:image-bucket:*` |
+| `registry:Prepull` | `krn:vks:registry:{id}` |
+| `registry:Test` | `krn:vks:registry:image-bucket:{supervisor}:{name}` `krn:vks:registry:{id}` |
+| `registry:Update` | `krn:vks:registry:image-bucket:{supervisor}:{name}` `krn:vks:registry:{id}` |
+
+### repository
+
+Git repositories backing GitOps flows.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `repository:Check` | `krn:vks:repository:{id}` |
+| `repository:Create` | `krn:vks:repository:*` |
+| `repository:Delete` | `krn:vks:repository:{id}` |
+| `repository:List` | `krn:vks:repository:*` |
+| `repository:ListBranches` | `krn:vks:repository:*` |
+| `repository:SetDefault` | `krn:vks:repository:{id}` |
+| `repository:Update` | `krn:vks:repository:{id}` |
+
+### secrets
+
+The secret store integration — Vault and External Secrets Operator.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `secrets:Configure` | `krn:vks:supervisor:{name}:secrets:*` |
+| `secrets:GetStatus` | `krn:vks:supervisor:{name}:secrets:*` |
+| `secrets:Install` | `krn:vks:supervisor:{name}:secrets:*` |
+
+### settings
+
+Global platform settings — a single resource, not per-supervisor.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `settings:Read` | `krn:vks:settings:global` |
+| `settings:Update` | `krn:vks:settings:global` |
+
+### site
+
+Physical locations that supervisors and registries are tagged with.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `site:Create` | `krn:vks:site:*` |
+| `site:Delete` | `krn:vks:site:{id}` |
+| `site:List` | `krn:vks:site:*` |
+
+### storage
+
+Storage drivers, storage classes, disks, and Rook.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `storage:ApplyStorageClass` | `krn:vks:supervisor:{name}:storage:*` |
+| `storage:DeleteStorageClass` | `krn:vks:supervisor:{name}:storage:*` |
+| `storage:Discover` | `krn:vks:supervisor:{name}:storage:*` |
+| `storage:GetStatus` | `krn:vks:supervisor:{name}:storage:*` |
+| `storage:InstallDriver` | `krn:vks:supervisor:{name}:storage:*` |
+| `storage:Test` | `krn:vks:supervisor:{name}:storage:*` |
+
+<Warning>
+  `storage:InstallDriver` also covers **wiping disks** during Rook preparation. It is not a read-adjacent permission.
+</Warning>
+
+### supervisor
+
+The supervisor itself — summary, refresh, bootstrap, onboarding, power profile.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `supervisor:ApplyManifests` | `krn:vks:supervisor:{name}` |
+| `supervisor:Bootstrap` | `krn:vks:supervisor:{name}` |
+| `supervisor:GetResources` | `krn:vks:supervisor:{name}` |
+| `supervisor:GetSummary` | `krn:vks:supervisor:{name}` |
+| `supervisor:List` | `krn:vks:supervisor:*` |
+| `supervisor:Manage` | `krn:vks:supervisor:{name}` |
+| `supervisor:Onboard` | `krn:vks:supervisor:{name}` |
+| `supervisor:Refresh` | `krn:vks:supervisor:{name}` |
+| `supervisor:SetPowerProfile` | `krn:vks:supervisor:{name}` |
+
+### sysprep-template
+
+Windows sysprep documents for VM provisioning.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `sysprep-template:Create` | `krn:vks:sysprep-template:*` |
+| `sysprep-template:Delete` | `krn:vks:sysprep-template:{id}` |
+| `sysprep-template:Get` | `krn:vks:sysprep-template:{id}` |
+| `sysprep-template:List` | `krn:vks:sysprep-template:*` |
+| `sysprep-template:Update` | `krn:vks:sysprep-template:{id}` |
+
+### vcluster
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `vcluster:GetStatus` | `krn:vks:supervisor:{name}:vcluster:*` |
+| `vcluster:Install` | `krn:vks:supervisor:{name}:vcluster:*` |
+
+### virt
+
+KubeVirt and the snapshot controller.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `virt:GetStatus` | `krn:vks:supervisor:{name}:virt:*` |
+| `virt:Install` | `krn:vks:supervisor:{name}:virt:*` |
+
+### vm
+
+Virtual machine lifecycle and console access.
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `vm:AttachVolume` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Create` | `krn:vks:supervisor:{name}:vm:*` `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Delete` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Eject` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Expose` | `krn:vks:supervisor:{name}:vm:*` `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Get` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:List` | `krn:vks:supervisor:{name}:vm:*` |
+| `vm:Migrate` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Move` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Restart` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Restore` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Snapshot` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Start` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Stop` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:Update` | `krn:vks:supervisor:{name}:vm:{vm}` |
+| `vm:VncProxy` | `krn:vks:supervisor:{name}:vm:{vm}` |
+
+<Note>
+  `vm:VncProxy` grants interactive console access to a running VM — keyboard and screen, with no further authentication. It is included in `K8sGateOperator` but not in `K8sGateViewer`.
+</Note>
+
+### vm-cloudinit-template
+
+| Action | Resource (KRN) |
+| --- | --- |
+| `vm-cloudinit-template:Get` | `krn:vks:vm-cloudinit-template:{name}` |
+| `vm-cloudinit-template:List` | `krn:vks:vm-cloudinit-template:*` |
+
+## Built-in policies
+
+| Policy | Shape |
+| --- | --- |
+| `K8sGateAdmin` | `*:*` on `krn:vks:*` |
+| `K8sGateOperator` | A broad read statement plus an operate statement covering cluster, VM, Helm, Argo CD, addon, and domain mutations — all on `krn:vks:*` |
+| `K8sGateViewer` | Read-only actions on `krn:vks:*`, with no credential downloads |
+| `K8sGateSensitiveRead` | `cluster:GetKubeconfig`, `cluster:GetTalosconfig`, `cluster:GetSshPassword` on `krn:vks:*` |
+
+These are reconciled at startup and cannot be edited in the UI. To vary them, write a custom policy and attach both.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Permissions model" icon="shield-halved" href="/concepts/permissions-model">
+    How actions and KRNs are matched.
+  </Card>
+
+  <Card title="Authentication & IAM" icon="key" href="/get-started/authentication">
+    Groups, OIDC claim mapping, and the first admin.
+  </Card>
+</CardGroup>
