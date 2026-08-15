@@ -60,6 +60,10 @@ observabilityEgress: true
   An empty `podCidr` means the project's pods share the cluster-wide pod CIDR. A non-empty one means the project has its own pod pool — its prefix then becomes independently advertisable.
 </Note>
 
+<Info>
+  This profile is the platform's **assembled view**, not a single Kubernetes object — there is no `Project` CRD. On the cluster, a project is the `proj-<name>` **Namespace** (its labels and annotations carry the intent: description, advertise selections, egress routing mode) plus the companion objects the platform reconciles from it: the LoadBalancer pool, the egress policies, the isolation network policy, and optionally a pod pool and a VM identity pool. Kubernetes is the single source of truth — deleting the namespace's companions and re-reconciling the project restores them.
+</Info>
+
 ## Egress identity
 
 Each project can leave the cluster with its own source addresses — the basis for upstream, per-tenant firewall rules. The project's egress IPs are drawn from the supervisor's egress pool and **distributed across the egress gateway nodes**: each node/IP pair is implemented as one read-only egress policy on the [BGP & Egress](/networking/bgp-and-egress#egress-policies) tab.
