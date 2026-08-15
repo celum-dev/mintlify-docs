@@ -1,0 +1,116 @@
+---
+title: "Project networking"
+description: "How per-tenant networking — address slices, egress identity, isolation — is defined on the project and materializes as the objects the Networking page shows."
+icon: "diagram-project"
+---
+
+Much of a supervisor's per-tenant networking is not configured on the Networking page at all — it is configured on the **project**. The division of labor is deliberate:
+
+- **Projects define the per-tenant intent**: which address slices a tenant gets, what source IP its traffic leaves with, whether it is isolated.
+- **The Networking page shows and operates the resulting objects**: the pools, egress policies, and advertise rows those intents materialize as.
+
+This page is the networking view of projects. For the general project model — creation, isolation policy contents, deletion, permissions — see [Projects](/concepts/projects).
+
+## The supervisor addressing plan
+
+Before projects can be carved automatically, the supervisor holds a set of **super-CIDRs**. Every new project gets its slices cut from them:
+
+| Range | Example | What each project gets |
+| --- | --- | --- |
+| Pod supercidr | `10.244.0.0/16`, mask size `24` | Optionally, a dedicated `/24` pod CIDR |
+| Egress pool | `10.0.8.0/22` | Its egress IP or IPs |
+| LB supercidr | `10.0.16.0/20`, slice mask `27` | A `/27` LoadBalancer slice |
+
+Allocation reads the live pool objects on every create, so ranges claimed outside Celum are still counted. How the plan is seeded — and why an unseeded plan is a placeholder, not a configuration — is covered under [supervisor pool configuration](/concepts/projects#supervisor-pool-configuration).
+
+## What a project provisions
+
+Creating a project materializes its network in one pass:
+
+| Provisioned | Where it shows up on the Networking page |
+| --- | --- |
+| The `proj-<name>` namespace | Owner of everything below |
+| A LoadBalancer pool for the project's slice | [Pools & IPAM](/networking/pools-and-ipam), grouped under the project |
+| Egress IPs, distributed across the egress gateway nodes | [BGP & Egress](/networking/bgp-and-egress#egress) as read-only policies; [allocation views](/networking/pools-and-ipam#allocation-views) as egress allocations |
+| Optionally, a dedicated pod IP pool | [Pools & IPAM](/networking/pools-and-ipam#pod-ip-pools) |
+| Optionally, a VM identity pool | [VM identity pools](/networking/vm-identity-pools) |
+| The default isolation policy, observability egress, optional Kamaji control-plane access | Policy state on the project itself |
+| Advertise selections for its pod / LB / egress prefixes | Project-sourced rows in the [advertise table](/networking/bgp-and-egress#the-advertise-table) |
+
+A project's network profile, as the platform reports it (sanitized):
+
+```yaml
+name: shop
+namespace: proj-shop
+podCidr: ""                    # empty = shared pod CIDR; set = dedicated pool
+lbCidr: 10.0.16.32/27
+egressIps: [10.0.8.4, 10.0.8.5, 10.0.8.6]
+egressNodes:
+  - { node: node-1, ip: 10.0.8.4 }
+  - { node: node-2, ip: 10.0.8.5 }
+  - { node: node-3, ip: 10.0.8.6 }
+egressRouting: single-active
+bgpAdvertise: { pod: "off", lb: "on", egress: "on" }
+defaultIsolationPolicy: true   # desired
+isolationPolicyPresent: true   # actual
+observabilityEgress: true
+```
+
+<Note>
+  An empty `podCidr` means the project's pods share the cluster-wide pod CIDR. A non-empty one means the project has its own pod pool — its prefix then becomes independently advertisable.
+</Note>
+
+## Egress identity
+
+Each project can leave the cluster with its own source addresses — the basis for upstream, per-tenant firewall rules. The project's egress IPs are drawn from the supervisor's egress pool and **distributed across the egress gateway nodes**: each node/IP pair is implemented as one read-only egress policy on the [BGP & Egress](/networking/bgp-and-egress#egress-policies) tab.
+
+The `egressRouting` mode records how those IPs are used — `single-active` keeps one IP active at a time with failover handled by [Egress HA](/networking/bgp-and-egress#egress-ha); the per-node spread mode gives each selected node its own always-active IP. The full mode table lives in [Projects](/concepts/projects#egress).
+
+## BGP advertise toggles
+
+A project carries an advertise choice — on, off, or default — for each of its three prefix kinds:
+
+| Kind | Prefix advertised |
+| --- | --- |
+| `pod` | The project's dedicated pod CIDR, when it has one |
+| `lb` | The project's LoadBalancer slice |
+| `egress` | The project's egress IPs |
+
+These selections are stored on the project and fanned out to the BGP engine. On the [advertise table](/networking/bgp-and-egress#the-advertise-table) they appear as project-sourced rows; the table's toggles and the project's toggles are the same state seen from two sides, and the Live column verifies both against what the BGP daemons actually push.
+
+## Desired versus present
+
+Isolation-related settings track **intent and reality separately**, and the gap between them is your reconciliation signal:
+
+| Desired | Present | Meaning |
+| --- | --- | --- |
+| Default isolation policy enabled | Isolation policy exists | The platform reconciles a default isolation network policy into the project namespace |
+| Kamaji control-plane access enabled | Kamaji policy exists | Workloads may reach hosted Kamaji control planes, via its own reconciled policy |
+
+Desired true with present false means the reconciled policy is missing — usually deleted by hand in Policy Studio. The project then reports itself open even though its recorded intent says isolated. The same pattern (annotation records intent, live object is truth) is explained in [Projects](/concepts/projects#create-once-never-overwritten).
+
+**Observability egress** rides the isolation policy: when on, the policy opens egress for metrics and log shipping. Turning it off silently stops that data — nothing errors.
+
+## Permissions
+
+Project networking follows the project permissions — `cilium:GetState` to read, `cilium:Apply` to change, scoped to `krn:vks:supervisor:<supervisor>:cilium:*`. See [Projects — permissions](/concepts/projects#permissions) for the caveat about the grant's breadth.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Projects" icon="folder-tree" href="/concepts/projects">
+    The full project model — creation, isolation, deletion.
+  </Card>
+
+  <Card title="Pools & IPAM" icon="chart-pie" href="/networking/pools-and-ipam">
+    Where project pools and allocations surface.
+  </Card>
+
+  <Card title="BGP & Egress" icon="route" href="/networking/bgp-and-egress">
+    Where project egress policies and advertise rows surface.
+  </Card>
+
+  <Card title="VM identity pools" icon="id-card" href="/networking/vm-identity-pools">
+    The optional per-project identity range for VMs.
+  </Card>
+</CardGroup>
