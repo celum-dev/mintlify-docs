@@ -1,0 +1,102 @@
+---
+title: "VM identity pools"
+description: "Give VMs a stable claim address that follows them through live migration — create pools, preview the next address, and re-address stale claims."
+icon: "id-card"
+---
+
+A VM's pod address is volatile — it changes on restart and on migration. A **VM identity pool** hands out routable **claim addresses** that stay with a VM as it live-migrates between nodes, so its network identity never moves even when the VM does.
+
+This page covers the pool side — creating, sizing, and repairing pools. For how a VM claims an address and what identity means from the VM's perspective, see [VM networking](/vms/networking#the-vm-identity-network).
+
+## How a pool works
+
+An identity pool is a Cilium LoadBalancer IP pool that is deliberately **disabled** and labelled as an identity pool:
+
+- **Disabled** guarantees Cilium's LB-IPAM never assigns its addresses to Services — the pool exists only for VM claims.
+- The BGP engine still advertises the pool's **aggregate** prefix to the fabric, from every node.
+- The per-VM addresses stay node-internal, which is exactly what lets a VM keep its address after landing on a different node.
+
+In the [Pools & IPAM](/networking/pools-and-ipam) table, identity pools carry a **live-migration capable** badge so they are never mistaken for ordinary LoadBalancer pools. A healthy pool reads *disabled* (by design) and *advertised*, and expands into its claims — one row per VM:
+
+| VM | Namespace | Address | In range |
+| --- | --- | --- | --- |
+| `web-01` | `proj-shop` | `10.0.20.2` | Yes |
+| `web-02` | `proj-shop` | `10.0.20.3` | Yes |
+| `db-01` | `proj-shop` | `10.0.20.4` | Yes |
+| `build-runner` | `proj-ci` | `10.0.20.5` | Yes |
+
+Every claim in range and a stale count of zero is the steady state; anything else means the pool was resized under its claims — see [re-addressing](#re-addressing).
+
+<Warning>
+  Do not enable an identity pool or strip its identity role to "reuse" the range for Services. The moment LB-IPAM can allocate from it, Service addresses and VM claims collide.
+</Warning>
+
+## Create a pool
+
+<Steps>
+  <Step title="Open Pools & IPAM">
+    Go to **Supervisors → your supervisor → Networking → Pools & IPAM** and click **Add pool**.
+  </Step>
+  <Step title="Choose the VM identity kind">
+    Give the pool a name and a CIDR that your fabric routes — for example `10.0.20.0/24`. The network and broadcast addresses are always reserved; a `/24` yields 254 claimable addresses.
+  </Step>
+  <Step title="Create">
+    The pool is created disabled and identity-labelled, and its aggregate begins advertising. VMs can claim from it immediately — the claim itself happens at [VM creation](/vms/create).
+  </Step>
+</Steps>
+
+<Note>
+  A [project](/networking/project-networking) can also be given a VM identity range at creation — the resulting pool is identical, just owned by the project's lifecycle.
+</Note>
+
+## Next-IP preview
+
+Each identity pool can show the **next address** it would hand out: the first free address in the CIDR, skipping the network and broadcast addresses and every address already claimed by a VM. The create-VM flow uses the same computation, so the preview is exactly what the next VM will get.
+
+<Note>
+  Allocation is claim-scan based — the annotation on the VM **is** the record, there is no separate allocation store. Two VMs created in the same instant can theoretically race for the same address; for operator-driven creation this does not happen in practice.
+</Note>
+
+## Re-addressing
+
+Resizing a pool can leave claims **stale** — an address outside the pool's current CIDR is no longer advertised, and the VM is unreachable on it. The pool's **Re-address** action repairs this:
+
+| Invocation | Effect |
+| --- | --- |
+| Re-address the pool | Every claim whose address falls outside the current CIDR gets the next free in-range address |
+| Re-address one VM | That VM gets a fresh address from the pool, even if its current one is still in range |
+
+Re-addressing updates the claim on the VM and on its live instance, so the new address takes effect without recreating the VM. If the pool runs out of free addresses mid-operation, the action stops with a conflict — grow the pool and run it again.
+
+<Warning>
+  Shrinking a pool strands every claim outside the new range. Check the [IP allocations view](/networking/pools-and-ipam#allocation-views) before resizing, and plan to re-address immediately after — a stale claim means a VM that is silently unreachable on its identity address.
+</Warning>
+
+## Permissions
+
+| Task | Action |
+| --- | --- |
+| Read pools and the next-IP preview | `cilium:GetState` |
+| Create, resize, or delete a pool; re-address | `cilium:Apply` |
+
+Both are scoped to `krn:vks:supervisor:<supervisor>:cilium:*`.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="VM networking" icon="network-wired" href="/vms/networking">
+    Claims, stale-claim symptoms, and everything else from the VM's side.
+  </Card>
+
+  <Card title="Create a VM" icon="circle-plus" href="/vms/create">
+    Where a VM claims its identity address.
+  </Card>
+
+  <Card title="Pools & IPAM" icon="chart-pie" href="/networking/pools-and-ipam">
+    The unified pool table this pool kind lives in.
+  </Card>
+
+  <Card title="BGP & Egress" icon="route" href="/networking/bgp-and-egress">
+    Where the pool's aggregate shows up in the advertise table.
+  </Card>
+</CardGroup>

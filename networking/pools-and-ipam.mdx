@@ -1,0 +1,125 @@
+---
+title: "Pools & IPAM"
+description: "Manage LoadBalancer, VM identity, and Pod IP pools in one table — utilization, conflict signals, and the allocation views underneath."
+icon: "chart-pie"
+---
+
+The **Pools & IPAM** tab is the single home for every IP pool on a supervisor. One table lists all three kinds, each tagged with a kind chip and a usage bar; **IP allocations** and **per-project allocations** sit below it.
+
+| Kind | Backing object | Hands out addresses to |
+| --- | --- | --- |
+| LoadBalancer pool | `CiliumLoadBalancerIPPool` | Services of type LoadBalancer |
+| VM identity pool | `CiliumLoadBalancerIPPool` (disabled, identity-labelled) | VMs, as migration-stable claim addresses |
+| Pod IP pool | `CiliumPodIPPool` | Pods, via multi-pool pod IPAM |
+
+VM identity pools carry a **live-migration capable** badge and have their own page — see [VM identity pools](/networking/vm-identity-pools).
+
+## LoadBalancer pools
+
+A LoadBalancer pool defines the addresses Cilium's LB-IPAM may assign to Services. Create one with **Add pool** and fill in:
+
+| Field | Meaning |
+| --- | --- |
+| Name | The pool object's name |
+| Blocks | One or more CIDRs (`10.0.10.0/24`) or explicit ranges (`10.0.10.10`–`10.0.10.50`) |
+| Service selector | `matchLabels` restricting which Services may draw from this pool |
+| Disabled | Stops new allocations without touching existing ones |
+| Allow first/last IPs | Whether the network and broadcast addresses of a CIDR block are assignable |
+
+<Note>
+  **Disabled** is the safe way to drain a pool: Services that already hold an address keep it, while new Services are steered to other pools. Deleting the pool instead would strip addresses from live Services.
+</Note>
+
+<Warning>
+  Leave **Allow first/last IPs** off for CIDR blocks unless you know the fabric routes them. The network (`.0`) and broadcast (`.255` on a `/24`) addresses are technically assignable, and some upstream equipment drops traffic to them.
+</Warning>
+
+### Utilization and conflicts
+
+Each pool row shows live numbers read from the pool's own status conditions — total, used, and available addresses — rendered as a usage bar. A freshly created `/27` pool carrying one Service reads **32 total · 1 used · 31 available**; the bar turns from healthy to warning as the pool fills.
+
+The same conditions surface **pool conflicts**: when two pools overlap, Cilium marks the newer one conflicting and stops allocating from it. A conflicting pool is flagged in the table; fix the overlap rather than working around it, because a conflicted pool silently serves nothing.
+
+### Project and tenant pools
+
+Pools created by a project — its LoadBalancer slice, carved from the supervisor's addressing plan — appear in the same table, grouped under the owning project. Tenant clusters get a pool of their own too, with a service selector that scopes it to that cluster's published services. Both kinds are managed through their owning lifecycle — edit the project or cluster, not the pool object. [Project networking](/networking/project-networking) explains how the slices are carved and what else a project provisions.
+
+## Pod IP pools
+
+Pod IP pools give different workloads addresses from different ranges — multi-tenant pod networking, per-pool masquerade control, or per-pool BGP advertisement. A pool defines:
+
+| Field | Meaning |
+| --- | --- |
+| Name | The pool object's name |
+| IPv4 CIDRs | The pool's address ranges, for example `10.20.0.0/16` |
+| IPv4 mask size | Per-node subnet size — `24` gives each node a `/24` carve-out |
+| IPv6 CIDRs / mask size | Optional IPv6 equivalents |
+| Pod selector | Labels a pod must match to draw from this pool |
+| Namespace selector | Labels the pod's namespace must match |
+
+Cilium picks a pool for a pod in this order:
+
+<Steps>
+  <Step title="Pod annotation">
+    An explicit `ipam.cilium.io/ip-pool=<pool>` annotation on the pod wins outright.
+  </Step>
+  <Step title="Selectors">
+    Otherwise the pod is matched against each pool's pod and namespace selectors.
+  </Step>
+  <Step title="Default pool">
+    Otherwise the pool named `default` serves it.
+  </Step>
+</Steps>
+
+<Warning>
+  A pod must match **exactly one** pool per IP family. Overlapping selectors do not merge — they make allocation fail, and the pod sticks in `ContainerCreating`. Keep selectors disjoint.
+</Warning>
+
+## Allocation views
+
+Two views below the pool table answer "who holds what". **IP allocations** assembles the supervisor's full address picture:
+
+| Block | What it shows |
+| --- | --- |
+| Pod CIDR | The pod network aggregate, read from the nodes themselves, with each project's pod pools underneath |
+| Service CIDR | The cluster's Service range, read from the ServiceCIDR API |
+| LoadBalancer pools | Every pool with its allocations — the address, the Service holding it, and the owner behind the Service |
+| Egress hosts | Each gateway node with the egress addresses currently placed on it |
+| Egress allocations | Each egress address with the node carrying it and the owning project |
+
+Owner resolution goes one step past the Service: an address held by the supervisor-side mirror of a tenant cluster's Service is attributed to that tenant cluster, not to the mirror object. This is the view to check before shrinking any pool.
+
+**Project allocations** rolls the same data up per project — its LoadBalancer range, its egress IP, which prefix kinds it advertises over BGP (pod, LoadBalancer, egress), its egress routing mode, and its default isolation policy. It answers "what does this project's network footprint look like" in one row; the intent behind each column is set on the project itself — see [Project networking](/networking/project-networking).
+
+### Looking up an IP
+
+Any single address can be resolved to its owner: a Service, a pod, a VM, a node, or an infrastructure interface. The answer includes what kind of thing holds it and a plain description — "Kubernetes Service (LoadBalancer)" — and, for infrastructure interfaces, the subnet and VLAN the address belongs to. Use it when an unfamiliar address turns up in a flow log or a firewall rule and you need to know what it is before acting on it.
+
+## Permissions
+
+| Task | Action |
+| --- | --- |
+| Read pools, utilization, allocations | `cilium:GetState` |
+| Create, update, or delete a pool | `cilium:Apply` |
+
+Both are scoped to `krn:vks:supervisor:<supervisor>:cilium:*`.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="VM identity pools" icon="id-card" href="/networking/vm-identity-pools">
+    The third pool kind — addresses that survive live migration.
+  </Card>
+
+  <Card title="BGP & Egress" icon="route" href="/networking/bgp-and-egress">
+    How pool prefixes get advertised to the fabric.
+  </Card>
+
+  <Card title="Project networking" icon="diagram-project" href="/networking/project-networking">
+    Where a project's LoadBalancer slice and egress IPs come from.
+  </Card>
+
+  <Card title="Networking overview" icon="network-wired" href="/networking/overview">
+    The engine model behind this page.
+  </Card>
+</CardGroup>
