@@ -40,8 +40,15 @@
           },
           {
             "group": "Clusters",
+            "icon": "circle-nodes",
             "pages": [
-              "clusters/create"
+              "clusters/overview",
+              "clusters/create",
+              "clusters/templates",
+              "clusters/day-2-operations",
+              "clusters/hosted-control-planes",
+              "clusters/access-and-credentials",
+              "clusters/troubleshooting"
             ]
           },
           {

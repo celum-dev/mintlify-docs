@@ -1,0 +1,154 @@
+---
+title: "Day-2 operations"
+description: "Everything Celum reads inside a running tenant cluster — nodes, events, metrics, Helm releases, exposure, and workloads — without anyone touching kubectl."
+icon: "gauge-high"
+---
+
+Once a cluster is running, its detail page (`/s/<supervisor>/clusters/<cluster>`) is built entirely from read-only calls **through the tenant's own kubeconfig**, which Celum already holds on the supervisor. All of these live under `/api/clusters/<cluster>/...` and take `?supervisor=` and `?namespace=` query parameters to disambiguate which supervisor hosts the cluster and which namespace its Cluster API objects live in.
+
+<Note>
+  `<supervisor>` and `<cluster>` are placeholders throughout, and payload excerpts are trimmed — real responses carry more rows and fields.
+</Note>
+
+## Nodes and events
+
+`GET /api/clusters/<cluster>/nodes` lists the cluster's machines — the Cluster API view of its nodes, with phases and versions. It pairs with the events feed, `GET /api/clusters/<cluster>/events`, which is the first stop for "why is something failing in this tenant":
+
+```json
+[
+  { "type": "Warning", "reason": "BackOff",
+    "message": "Back-off restarting failed container frontend-check in pod loadgenerator-5f47d56dcb-zddlc_default(...)",
+    "count": 895, "lastTime": "2026-08-16T12:32:12Z",
+    "objectKind": "Pod", "objectName": "loadgenerator-5f47d56dcb-zddlc" },
+  { "type": "Normal", "reason": "Pulled",
+    "message": "Successfully pulled image \"busybox:latest\" in 3.027s (3.027s including waiting).",
+    "count": 1, "objectKind": "Pod", "objectName": "loadgenerator-5f47d56dcb-zddlc" }
+]
+```
+
+Events carry the tenant's own reasons and messages verbatim — Celum adds nothing, so what you see is what `kubectl get events` would show.
+
+## Metrics — and the `available: false` case
+
+`GET /api/clusters/<cluster>/metrics` aggregates CPU, memory, storage, pod counts, per-node stats, and top namespaces. When the tenant has **no metrics source installed** (no metrics-server or monitoring agent), the endpoint does not error — it returns this, and it is the expected response, not a failure:
+
+```json
+{
+  "available": false,
+  "source": "",
+  "cpu": { "used": 0, "total": 0, "percent": 0 },
+  "memory": { "used": 0, "total": 0, "percent": 0 },
+  "pods": { "running": 0, "capacity": 0 }
+}
+```
+
+Enable the monitoring addon on the cluster (or install metrics-server in the tenant) and the same endpoint starts returning live numbers with `available: true`.
+
+## Helm releases
+
+Tenants have no Flux — Celum talks Helm directly through the tenant kubeconfig. `GET /api/clusters/<cluster>/helm-releases` is the app inventory:
+
+```json
+[
+  { "name": "cert-manager", "namespace": "cert-manager", "chart": "cert-manager",
+    "chartVersion": "v1.20.2", "appVersion": "v1.20.2", "status": "deployed", "revision": 2 },
+  { "name": "cilium", "namespace": "kube-system", "chart": "cilium",
+    "chartVersion": "1.19.4", "appVersion": "1.19.4", "status": "deployed", "revision": 1 },
+  { "name": "prometheus-agent", "namespace": "monitoring", "chart": "prometheus",
+    "chartVersion": "29.24.0", "appVersion": "v3.13.2", "status": "deployed", "revision": 12 }
+]
+```
+
+The write side mirrors the Helm CLI:
+
+| Task | Endpoint |
+| --- | --- |
+| Install a release | `POST /api/clusters/<cluster>/helm-releases` |
+| Upgrade a release | `PUT /api/clusters/<cluster>/helm-releases/<release>` |
+| Poll a running upgrade | `GET .../helm-releases/<release>/upgrade-status/<jobID>` |
+| Read a release's values | `GET .../helm-releases/<release>/values` |
+| Uninstall | `DELETE .../helm-releases/<release>` |
+
+Upgrades run asynchronously — the `PUT` returns a job ID and the status endpoint reports progress until the Helm operation completes.
+
+![The cluster detail page with its Helm Releases panel expanded — chart, version, status, revision and last update per release](/images/clusters/cluster-detail-helm.png)
+
+## Exposure — LoadBalancers and ingresses
+
+Two endpoints answer "how is this cluster reachable from outside". `GET /api/clusters/<cluster>/lb-services` lists its LoadBalancer Services with the external IPs the supervisor's [pools](/networking/pools-and-ipam) assigned:
+
+```json
+[
+  { "name": "demo-cl-lb", "namespace": "proj-demo", "externalIp": "203.0.113.10",
+    "ports": "6443/TCP", "age": "44d" }
+]
+```
+
+`GET /api/clusters/<cluster>/ingresses` lists the HTTP surface — Ingress objects with hosts and TLS state:
+
+```json
+[
+  { "name": "api-ingress", "namespace": "portal", "hosts": ["api.demo-cl.example.com"], "tls": true, "age": "25d" },
+  { "name": "admin-ingress", "namespace": "portal", "hosts": ["admin.demo-cl.example.com"], "tls": true, "age": "25d" }
+]
+```
+
+Tenants can also run their own Gateway API stack: `/api/clusters/<cluster>/gateway/...` installs Envoy Gateway inside the guest and manages its gateways and routes. Publishing through the **supervisor's** shared gateway instead is covered in [Gateways & routes](/networking/gateways-and-routes).
+
+## Workloads — namespaces, pods, logs
+
+The workloads drill-down goes namespace → pod list → pod detail, all inside the tenant:
+
+| Level | Endpoint |
+| --- | --- |
+| Namespaces | `GET /api/clusters/<cluster>/workload-namespaces` |
+| Pods in one namespace | `GET /api/clusters/<cluster>/workload-pods?podNamespace=<ns>` |
+| One pod's detail | `GET /api/clusters/<cluster>/workload-pod?podNamespace=<ns>&podName=<pod>` |
+| One pod's events | `GET /api/clusters/<cluster>/workload-pod-events?podNamespace=<ns>&podName=<pod>` |
+| One pod's logs | `GET /api/clusters/<cluster>/workload-pod-logs?podNamespace=<ns>&podName=<pod>` |
+
+The pod list is where trouble shows first — status, readiness, and restart counts per pod:
+
+```json
+[
+  { "name": "cilium-operator-7487789fb9-5bnfq", "namespace": "kube-system",
+    "node": "demo-cl-md0-d5kp8-b4q46-pmdd4", "status": "Running", "ready": "1/1", "restarts": 3 },
+  { "name": "hubble-relay-758b8867dd-9m5zx", "namespace": "kube-system",
+    "node": "demo-cl-md0-d5kp8-b4q46-527pn", "status": "CrashLoopBackOff", "ready": "0/1", "restarts": 1205 }
+]
+```
+
+Log reads accept `container` and `tailLines` parameters, defaulting to the first container and the trailing 200 lines.
+
+## The kubectl-get escape hatch
+
+When the curated views don't cover a resource, `GET /api/clusters/<cluster>/kubectl-get` is a generic, **read-only** `kubectl get` against the tenant: any kind — core resources or CRDs — listed or fetched as full YAML with `resourceName`, scoped with `resourceNamespace` or `allNamespaces=true`. It never mutates, and Secret values are redacted. Everything it serves is subject to the same permission (`cluster:GetResources`) and lands in the audit log like every other call.
+
+## Permissions
+
+| Task | Action |
+| --- | --- |
+| List clusters / fleet health | `cluster:List` / `cluster:GetHealth` |
+| Read nodes | `cluster:GetNodes` |
+| Read events | `cluster:GetEvents` |
+| Read metrics, namespaces, pods, logs | `cluster:GetWorkloads` |
+| kubectl-get | `cluster:GetResources` |
+| Read LB Services / ingresses | `cluster:GetLBServices` / `cluster:GetIngresses` |
+| List releases / read values | `helm-release:List` / `helm-release:GetValues` |
+| Install / upgrade / uninstall releases | `helm-release:Install` / `helm-release:Upgrade` / `helm-release:Uninstall` |
+
+<Note>
+  **Celum AI** works these same views — `get_cluster_events`, `list_cluster_workload_pods`, and `get_cluster_pod_logs` let it answer "why is this pod crashing?" from the identical data, and `get_cluster_exposure` covers the LB/ingress side.
+</Note>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Troubleshooting" icon="bug" href="/clusters/troubleshooting">
+    The triage order that strings these reads together.
+  </Card>
+
+  <Card title="Access & credentials" icon="key" href="/clusters/access-and-credentials">
+    Kubeconfig, talosconfig, and SSH — when you do need direct access.
+  </Card>
+</CardGroup>
