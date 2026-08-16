@@ -1,0 +1,123 @@
+---
+title: "NFS & Fibre Channel"
+description: "The external storage backends — the NFS CSI driver with its storage classes and test-PVC smoke check, and the Hitachi HSPC driver for dynamic FC volume carving, with its multipath prerequisite."
+icon: "plug"
+---
+
+Two of the three storage backends consume storage that lives **outside** the supervisor's nodes: **NFS** mounts an export from a NAS, and **Fibre Channel (HSPC)** carves volumes dynamically on a Hitachi VSP array. Both are tabs on the wizard's Storage step; both report through the standard [component status model](/platform-health/overview).
+
+<Note>
+  If your FC array is meant to be *capacity* rather than a data-services endpoint, consider feeding its LUNs to Ceph instead — the [`san` device class](/storage/rook-ceph#san-lun-osds--the-san-device-class) keeps the array out of the runtime path entirely. HSPC is the right choice when each volume should be a first-class array object.
+</Note>
+
+## NFS
+
+The NFS tab installs the CSI NFS driver (`csi-driver-nfs`, in `kube-system`) and creates a StorageClass per export:
+
+| Field | Meaning |
+| --- | --- |
+| Server | The NFS server address |
+| Share | The exported path |
+| StorageClass name | Default `nfs` |
+| Default class | Marks it the cluster default |
+| Mount options | Default `nfsvers=4.1`, `hard`, `noatime` |
+| Reclaim policy | `Delete` or `Retain` |
+| Gateway | Storage-network next-hop — required **only** when the server sits outside the declared storage subnet; bring-up then pushes a host route to the server via that gateway onto the storage interface |
+| Chart version | Pinned by default, dropdown to move deliberately |
+
+The driver installs once; StorageClasses are applied independently, so you can save a class, smoke-test it, adjust, and re-apply without reinstalling anything. Multiple exports become multiple classes on the same driver.
+
+### The test PVC
+
+**Test PVC** provisions a small throwaway claim against the class, waits for it to bind, and deletes it. On failure it returns the claim's **events** — the actual `mount.nfs`, DNS, or firewall error from the provisioner — so a misconfigured server or an unreachable export is diagnosed in the panel, not in `kubectl`. Run it after every apply; an NFS class that binds the smoke-test claim will bind real workloads.
+
+### Status and orphans
+
+The NFS status carries the driver's HelmRelease block plus every NFS StorageClass with its server and share. Before anything is installed the shape is minimal and honest:
+
+```json
+{ "helmRelease": { "exists": false, "ready": false }, "storageClasses": null }
+```
+
+A StorageClass whose driver release is missing or not ready is flagged **orphan**: it looks valid, PVCs can reference it, and nothing will ever bind. The panel offers deletion for orphan classes — the one StorageClass delete operation in the product, deliberately scoped to NFS orphans.
+
+## Fibre Channel — Hitachi HSPC
+
+The Fibre Channel tab deploys the **Hitachi Storage Plug-in for Containers** as an operator: a HelmRelease installs the HSPC operator, the backend then applies the HSPC resource that makes the operator deploy the CSI controller and per-node driver, a credentials Secret, and the `hspc-fc` StorageClass. Each PVC becomes an **LDEV** carved from a DP pool on the array and masked to the node that mounts it.
+
+### Discover, then install
+
+**Discover** logs into the array's management API with the address and credentials you enter and returns what you would otherwise hand-type:
+
+- the array model, serial, and device ID;
+- every **DP pool** with its status, capacity, and used rate — statuses are color-classified so a full or blocked pool is visibly not a candidate;
+- every **FC port** with its WWN, speed, and whether it is a target port.
+
+Pick a pool and the ports; the form fills itself. The install fields:
+
+| Field | Meaning |
+| --- | --- |
+| Array URL, username, password | Management API endpoint and credentials — the password is write-only and kept on re-apply when left empty |
+| Serial number | The array serial |
+| Pool ID | The **numeric** DP-pool ID (e.g. `0`), not the pool name |
+| Port IDs | Comma-separated FC target ports, e.g. `CL1-A,CL2-A` |
+| Host mode options | Optional array host-mode option list |
+| Filesystem | Default `ext4` |
+| StorageClass name | Default `hspc-fc` |
+| Default class / reclaim policy | As for any class |
+
+<Note>
+  The array fields are optional per apply: submitting with them blank installs just the operator, so you can stage the driver before the array is reachable and wire the credentials later.
+</Note>
+
+### Status
+
+The FC status reports four independent facts, in dependency order: the operator HelmRelease, whether the HSPC resource is applied, whether the **driver is ready** (the CSI controller is actually available — the fact the wizard counts toward storage readiness), and whether the credentials Secret is configured, plus the resulting StorageClass and the round-tripped desired config.
+
+### Multipath is load-bearing
+
+<Warning>
+  On dual-path nodes HSPC **requires** working kernel multipath — the `dm_multipath` module loaded and a multipath configuration present, not just a multipath daemon. Without it the two paths to an LDEV stay two separate devices, the driver formats *one* of them, and the first mount fails with a remote I/O error. Verify path health on the [Infrastructure page](/platform-health/infrastructure) — FC ports `Online`, LUNs showing their expected path count — before creating the first PVC.
+</Warning>
+
+### What commonly goes wrong
+
+| Symptom | Cause and fix |
+| --- | --- |
+| Every FC PVC Pending, driver ready | An invalid entry in the port list — the ports field is sanitized against stray empty elements, but a port name the array does not recognize still fails every provision. Re-check against Discover's port list. |
+| `mkfs` / mount fails with a remote I/O error | The multipath prerequisite (above). |
+| Provisioning fails after the volume was created | A failed provision can leave an orphan LDEV on the array — HSPC does not clean those up. Normal PVC deletion on a healthy class does delete its LDEV. Reclaim orphans array-side. |
+| NFS PVC Pending | Run **Test PVC** — the events name the mount, DNS, or firewall fault. If the server is outside the storage subnet, the **Gateway** field is not optional. |
+| NFS class exists but nothing binds, driver panel empty | Orphan class — the driver release is gone. Reinstall the driver or delete the orphan. |
+
+## Permissions
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| Read NFS / FC status | `storage:GetStatus` | `krn:vks:supervisor:<supervisor>:storage:*` |
+| Install the NFS driver, install HSPC, run array discovery | `storage:InstallDriver` | `krn:vks:supervisor:<supervisor>:storage:*` |
+| Create or update an NFS StorageClass | `storage:ApplyStorageClass` | `krn:vks:supervisor:<supervisor>:storage:*` |
+| Delete an orphan NFS StorageClass | `storage:DeleteStorageClass` | `krn:vks:supervisor:<supervisor>:storage:*` |
+| Run the NFS test PVC | `storage:Test` | `krn:vks:supervisor:<supervisor>:storage:*` |
+
+Array discovery is intentionally gated as an install-family action — it authenticates against the array with admin credentials, not a read-only view.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Rook-Ceph" icon="database" href="/storage/rook-ceph">
+    The alternative for FC arrays — LUNs as Ceph OSDs, array out of the runtime path.
+  </Card>
+
+  <Card title="Classes & profiles" icon="layer-group" href="/storage/classes-and-profiles">
+    What NFS and FC classes can and cannot back — access modes, volume modes, clone strategy.
+  </Card>
+
+  <Card title="Infrastructure & nodes" icon="server" href="/platform-health/infrastructure">
+    FC port state and the SAN LUN multipath picture per node.
+  </Card>
+
+  <Card title="Storage overview" icon="hard-drive" href="/storage/overview">
+    Choosing between the three backends.
+  </Card>
+</CardGroup>

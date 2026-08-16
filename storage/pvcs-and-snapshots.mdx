@@ -1,0 +1,110 @@
+---
+title: "PVCs & snapshots"
+description: "The per-namespace claim browser and volume snapshot list, the snapshot controller component, and the full checklist for a claim stuck Pending."
+icon: "box-archive"
+---
+
+Claims and snapshots are browsed **per namespace** — the browser backs the VM detail page's attach-volume flow, where an existing claim or a snapshot becomes a disk on a VM, and it is the quickest read on "what storage does this namespace actually hold".
+
+## The PVC browser
+
+Each claim row carries what you need to judge it at a glance:
+
+```json
+[
+  { "name": "storage-loki-0", "namespace": "monitoring", "capacity": "50Gi",
+    "storageClass": "ceph-block", "accessModes": ["ReadWriteOnce"],
+    "volumeMode": "Filesystem", "phase": "Bound", "inUse": true,
+    "created": "2026-06-18T18:55:58+02:00" },
+  { "name": "kube-prometheus-stack-grafana", "namespace": "monitoring", "capacity": "5Gi",
+    "storageClass": "ceph-block", "accessModes": ["ReadWriteOnce"],
+    "volumeMode": "Filesystem", "phase": "Bound", "inUse": true,
+    "created": "2026-06-18T18:56:01+02:00" }
+]
+```
+
+| Field | Meaning |
+| --- | --- |
+| `capacity` | The bound volume's actual size — falls back to the requested size while unbound |
+| `phase` | `Bound` is healthy; `Pending` means no volume yet — see the checklist below |
+| `inUse` | A pod in the namespace currently references this claim |
+
+`inUse` is computed from live pod specs, and it exists for one decision: a ReadWriteOnce claim that is in use **cannot be attached elsewhere** — the attach-volume picker disables exactly those rows. An idle RWO claim is fair game; an RWX claim is shareable regardless.
+
+## Volume snapshots
+
+The snapshot list is namespace-scoped the same way: each snapshot with its source claim, restore size, snapshot class, and a `readyToUse` flag — only ready snapshots can be cloned into new claims (the attach-volume flow's "from snapshot" source, and the file-level recovery path recommended in [VM storage](/vms/storage#snapshots)).
+
+On a supervisor where the snapshot machinery has never been installed the list is an **empty array, not an error** — the snapshot resource type simply does not exist there yet. An empty list therefore means either "no snapshots" or "no snapshot support"; the snapshot controller's status (below) tells you which.
+
+## The snapshot controller
+
+Volume snapshots need their own controller — it is not part of any storage backend. Celum installs it from the wizard's **Virtualization** step (its main consumer is VM snapshot/restore), as a `snapshot-controller` HelmRelease in `kube-system`:
+
+```json
+{
+  "helmReleaseExists": true, "ready": true, "revision": "5.2.0",
+  "reason": "UpgradeSucceeded",
+  "message": "Helm upgrade succeeded for release kube-system/snapshot-controller.v2 with chart snapshot-controller@5.2.0",
+  "volumeSnapshotClasses": [
+    { "name": "ceph-block-snap", "driver": "rook-ceph.rbd.csi.ceph.com", "isDefault": false }
+  ]
+}
+```
+
+The install asks for a **source StorageClass** and derives the rest: it resolves that class's CSI driver and creates a matching **VolumeSnapshotClass** (default name `ceph-block-snap`), optionally marked as the default so snapshots that name no class still work. Leave the source class empty and only the controller installs — snapshot classes can be added later. Volume-group snapshot support is enabled by default.
+
+<Note>
+  The controller is required for **VM snapshot and restore** and for snapshot-sourced volumes. It is *not* what makes VM cloning fast — clone speed is the [clone strategy](/storage/classes-and-profiles#cdi-storageprofiles) of the storage class, and the fast path works without any snapshot infrastructure.
+</Note>
+
+## PVC Pending — the checklist
+
+`Pending` means the provisioner has not produced a volume. The causes sort cleanly by layer:
+
+<Steps>
+  <Step title="Get the provisioner's own words">
+    Run a [test PVC](/storage/classes-and-profiles#the-test-pvc-diagnostic) against the same class with the same access mode and volume mode — on failure it returns the claim events verbatim. This one step names the cause for most Pending claims.
+  </Step>
+  <Step title="Provisioner present?">
+    An event that says *waiting for a volume to be created by the external provisioner* — repeating forever — means no provisioner is answering for that class. Classic cases: the NFS driver was removed and left an [orphan class](/storage/nfs-and-fibre-channel#status-and-orphans); a fresh Rook install whose [CSI driver resources have not landed yet](/storage/rook-ceph#what-commonly-goes-wrong) — Ceph can be perfectly healthy while nothing provisions.
+  </Step>
+  <Step title="Request satisfiable?">
+    Check the class's [profile](/storage/classes-and-profiles): ReadWriteMany on a class whose property sets only claim ReadWriteOnce, or Block mode on a file-backed class, pends forever with no retry that will ever succeed.
+  </Step>
+  <Step title="Backend healthy?">
+    [Ceph health](/storage/rook-ceph#status--two-layers) for capacity and OSD warnings; the NFS test PVC for reachability; the [FC failure table](/storage/nfs-and-fibre-channel#what-commonly-goes-wrong) for port-list and multipath faults.
+  </Step>
+  <Step title="Binding mode, as the last look">
+    A class with `WaitForFirstConsumer` binding holds claims Pending **by design** until a pod schedules — a Pending claim with no consumer yet is not a fault on such a class.
+  </Step>
+</Steps>
+
+## Permissions
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| List claims in a namespace | `discovery:ListPVCs` | `krn:vks:supervisor:<supervisor>:discovery:*` |
+| List volume snapshots in a namespace | `discovery:ListVolumeSnapshots` | `krn:vks:supervisor:<supervisor>:discovery:*` |
+| Install the snapshot controller | `virt:Install` | `krn:vks:supervisor:<supervisor>:virt:*` |
+| Read snapshot controller status | `virt:GetStatus` | `krn:vks:supervisor:<supervisor>:virt:*` |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="VM storage & disks" icon="hard-drive" href="/vms/storage">
+    Attaching claims and snapshots to VMs — and the four removal operations.
+  </Card>
+
+  <Card title="Classes & profiles" icon="layer-group" href="/storage/classes-and-profiles">
+    The capability data behind steps 1 and 3 of the checklist.
+  </Card>
+
+  <Card title="VM lifecycle" icon="rotate" href="/vms/lifecycle">
+    VM-level snapshot and restore — the snapshot controller's main consumer.
+  </Card>
+
+  <Card title="Storage overview" icon="hard-drive" href="/storage/overview">
+    The short triage version, and the three-backend model.
+  </Card>
+</CardGroup>
