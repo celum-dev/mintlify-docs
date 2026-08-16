@@ -1,0 +1,141 @@
+---
+title: "ArgoCD"
+description: "Discovering ArgoCD instances across supervisors and their guest clusters, onboarding one onto DNS and SSO, listing Applications in a namespace, and managing ApplicationSets."
+icon: "rotate"
+---
+
+Celum does not host ArgoCD — it finds the ArgoCD instances that already exist, tells you what each one is missing, and gives you a place to manage ApplicationSets across all of them. An instance can live on a supervisor (as a vSphere `ArgoCD` custom resource, or an upstream install) or inside a guest cluster; both are discovered.
+
+## Instance discovery
+
+`GET /api/argocd/instances` scans every supervisor Celum knows, then scans each supervisor's guest clusters for an upstream ArgoCD, and returns one row per instance:
+
+```json
+[
+  { "name": "argocd", "namespace": "<namespace>", "supervisor": "<supervisor>",
+    "source": "supervisor",
+    "lbIp": "203.0.113.21", "url": "https://argocd.example.com",
+    "domain": "example.com",
+    "hasOidc": true, "hasFqdn": true, "hasTls": true,
+    "onboarded": true, "version": "3.0.19+vmware.1-vks.1" },
+
+  { "name": "argocd", "namespace": "argocd", "supervisor": "<supervisor>",
+    "source": "guest", "clusterName": "demo-cl", "clusterNamespace": "proj-demo",
+    "lbIp": "", "url": "https://argocd.demo-cl.example.com",
+    "domain": "example.com",
+    "hasOidc": false, "hasFqdn": true, "hasTls": false,
+    "onboarded": false, "version": "v3.4.4" }
+]
+```
+
+The three booleans are the onboarding checklist, and `onboarded` is their conjunction: an instance reachable only by IP has `hasFqdn: false`, one still on its self-signed certificate has `hasTls: false`, one without SSO wired has `hasOidc: false`. `source` distinguishes a supervisor-hosted instance from one found inside a tenant; guest rows additionally carry `clusterName` and the supervisor-side `clusterNamespace`.
+
+Scoping is possible with `?supervisors=a,b` — otherwise every supervisor is scanned. Results are cached per supervisor, and each supervisor gets a five-second budget, so one unreachable cluster degrades to a missing row rather than a hanging page. A transient failure never overwrites a good cached result with an empty one.
+
+`GET /api/argocd` is the same discovery in a smaller shape — supervisor, namespace, URL — used where only the link matters.
+
+## Onboarding an instance
+
+Onboarding is what turns `https://203.0.113.21` into a named, trusted, SSO-backed endpoint. Check what is available first:
+
+`GET /api/argocd/config` returns `{ "enabled", "domains", "hasOidc", "hasDns" }`. `enabled` is true only when an ArgoCD OIDC client is configured **and** at least one domain is registered under **Settings → Domains** — onboarding has nothing to name the instance after otherwise.
+
+`POST /api/argocd/onboard` then takes `supervisor`, `namespace`, `name`, `domain`, and optionally `subdomain` and `clusterName`, and does the work in order:
+
+<Steps>
+  <Step title="Resolve the address">
+    Reads the LoadBalancer IP of the instance's server Service. The FQDN defaults to `argocd.<namespace>.<supervisor>.<domain>` unless you override the record name with `subdomain`.
+  </Step>
+  <Step title="Create the DNS record">
+    An A record pointing at that IP, through the configured DNS provider. This step is **best-effort** — if the DNS API refuses, onboarding continues and the response reports `dnsCreated: false`, leaving you to create the record by hand.
+  </Step>
+  <Step title="Issue the certificate and wire SSO">
+    A certificate for the FQDN, and the OIDC configuration for the instance. Certificate issuance can take minutes, so the request runs on a background context rather than being cut short by a proxy timeout.
+  </Step>
+</Steps>
+
+Guest-cluster instances take a different path: passing `clusterName` configures the upstream ArgoCD through its ConfigMaps instead of a supervisor-side custom resource. The `domain` must be one of the registered domains — anything else is rejected with `400` before any change is made.
+
+## Applications
+
+`GET /api/argocd/apps` returns both Applications and ApplicationSets for **one** ArgoCD instance:
+
+```
+GET /api/argocd/apps?supervisor=<supervisor>&namespace=<namespace>
+```
+
+<Warning>
+  `namespace` is required. Without it the call returns `400 namespace is required` — it does not default to all namespaces or to the first instance found. Take the namespace from an instance row returned by `GET /api/argocd/instances`.
+</Warning>
+
+The response is `{ "applications": [...], "applicationSets": [...] }`, scoped to that namespace. There is deliberately no cross-instance Application listing: Applications belong to the instance that owns them, and merging them would hide which ArgoCD is actually reconciling what.
+
+ApplicationSets *are* worth seeing together, so they get their own aggregate.
+
+## ApplicationSets
+
+`GET /api/argocd/all-appsets` walks every discovered instance and returns each ApplicationSet with its generators and readiness:
+
+```json
+[
+  { "name": "platform-infra", "namespace": "workloads", "supervisor": "<supervisor>",
+    "generators": ["git"], "statusReady": true, "statusMessage": "" },
+  { "name": "platform-infra-directs", "namespace": "workloads", "supervisor": "<supervisor>",
+    "generators": ["git"], "statusReady": true, "statusMessage": "" }
+]
+```
+
+`generators` names the kinds in play (`git`, `list`, `cluster`, `matrix`, …) — enough to tell a repository-driven set from a cluster-driven one at a glance. When `statusReady` is false, `statusMessage` carries the controller's own reason.
+
+The write side is raw-object CRUD, so you author the ApplicationSet manifest itself rather than filling in a form:
+
+| Task | Endpoint | Action |
+| --- | --- | --- |
+| Read one, as stored | `GET /api/argocd/appsets/<name>?supervisor=<supervisor>&namespace=<namespace>` | `argocd-appset:Get` |
+| Create | `POST /api/argocd/appsets?supervisor=<supervisor>&namespace=<namespace>` | `argocd-appset:Create` |
+| Update | `PUT /api/argocd/appsets/<name>?supervisor=<supervisor>&namespace=<namespace>` | `argocd-appset:Update` |
+| Delete | `DELETE /api/argocd/appsets/<name>?supervisor=<supervisor>&namespace=<namespace>` | `argocd-appset:Delete` |
+
+Create, update and delete all require `namespace`, for the same reason listing does. The body is the full ApplicationSet object; the read endpoint returns it unmodified, so read-edit-write is a safe round-trip.
+
+## Provisioning ArgoCD on a supervisor
+
+On supervisors that expose an ArgoCD custom resource, Celum can list and create instances directly:
+
+- `GET /api/supervisors/<supervisor>/argocd-instances` lists the `ArgoCD` custom resources with their namespace, version, URL, OIDC flag and phase. Action: `supervisor:GetSummary`.
+- `POST /api/supervisors/<supervisor>/argocd-instances` creates one — `namespace` and `version` are both required, and an existing instance in that namespace comes back as `409`. Action: `supervisor:Bootstrap`.
+
+<Warning>
+  **A `500` from the GET means ArgoCD is not installed on that supervisor.** The handler lists the `ArgoCD` custom resource kind; on a supervisor without those CRDs the list fails and the error surfaces as a `500` rather than an empty result. Read it as "this supervisor has no ArgoCD operator", not as an outage — but it is a rough edge, not intended behaviour. Returning an empty list instead is a known backlogged fix.
+</Warning>
+
+A lighter probe exists for one namespace: `GET /api/supervisors/<supervisor>/namespaces/<namespace>/argocd` returns `{ "found": true }` or `{ "found": false }`, and answers `found: false` rather than erroring when the check itself fails. Action: `discovery:CheckArgoCD`.
+
+## Permissions
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| List instances (compact) or Applications | `argocd:List` | `krn:vks:argocd:*` |
+| List instances with onboarding state | `argocd:ListDetailed` | `krn:vks:argocd:*` |
+| Read onboarding config | `argocd:GetConfig` | `krn:vks:argocd:*` |
+| Onboard an instance | `argocd:Onboard` | `krn:vks:argocd:*` |
+| List ApplicationSets across instances | `argocd-appset:List` | `krn:vks:argocd-appset:*` |
+| Read / create / update / delete an ApplicationSet | `argocd-appset:Get` / `:Create` / `:Update` / `:Delete` | `krn:vks:argocd-appset:*` · `krn:vks:argocd-appset:<name>` |
+| List or create supervisor ArgoCD instances | `supervisor:GetSummary` / `supervisor:Bootstrap` | `krn:vks:supervisor:<supervisor>` |
+| Probe one namespace for ArgoCD | `discovery:CheckArgoCD` | `krn:vks:supervisor:<supervisor>:discovery:*` |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Repositories & manifests" icon="code-commit" href="/gitops/repositories-and-manifests">
+    The Applications Celum itself generates and commits, which these instances then sync.
+  </Card>
+
+  <Card title="GitOps overview" icon="code-branch" href="/gitops/overview">
+    Where ArgoCD sits among the three delivery routes.
+  </Card>
+</CardGroup>
+
+<Note>
+  **Celum AI** covers this surface with `list_argocd` — `kind=instances` for the inventory, `kind=appsets` for ApplicationSets across instances, and `kind=apps` for Applications in one namespace (the `namespace` argument is required there too).
+</Note>

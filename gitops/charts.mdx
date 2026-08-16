@@ -1,0 +1,152 @@
+---
+title: "Charts & the mirror"
+description: "Searching ArtifactHub for a chart, reading the platform catalogue's pinned and available versions, and using chart mirror status as the first check when a version list is empty or an install cannot pull."
+icon: "magnifying-glass"
+---
+
+Charts reach Celum from two directions. **Third-party charts** are discovered on ArtifactHub and pointed at by an [app definition](/gitops/app-catalog). **Platform charts** — the CNI, storage, monitoring, Cluster API, the agent — come from a fixed catalogue in the backend, each with a pinned version, optionally served from an internal mirror registry rather than its public upstream. This page covers finding the first kind and diagnosing the second.
+
+## Finding a chart
+
+`GET /api/artifacthub/search?q=<term>` proxies ArtifactHub's package search, restricted to Helm charts, sorted by relevance, up to 50 results. Responses are cached, so repeated searches for the same term are free.
+
+```json
+{
+  "packages": [
+    { "package_id": "0602c8d2-b17d-432f-89f0-95000f3057a2",
+      "name": "redis", "normalized_name": "redis",
+      "description": "Redis(R) is an open source, advanced key-value store...",
+      "version": "28.0.5", "app_version": "8.10.0",
+      "stars": 511, "deprecated": false, "signed": true,
+      "signatures": ["cosign"],
+      "security_report_summary": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
+      "repository": { "name": "bitnami", "display_name": "Bitnami",
+                      "url": "https://charts.bitnami.com/bitnami",
+                      "official": false, "verified_publisher": true } }
+  ]
+}
+```
+
+Three fields decide whether a result is worth adopting: `repository.url` is what goes into an app definition's `helmRepoUrl`, `deprecated` rules out charts that will stop receiving updates, and `verified_publisher` plus `signatures` say how much the source is worth trusting. `version` is the chart version, `app_version` the software inside it — the app definition wants the former.
+
+Search is a discovery aid, not a validation step. Once you have a repo URL and chart name, confirm the exact version exists with [`POST /api/apps/helm-check`](/gitops/app-catalog#preview-and-validate-before-you-save) before saving the definition.
+
+## Platform chart versions
+
+`GET /api/charts/versions?source=<key>` answers "what can this platform component be upgraded to". `source` is a catalogue key, not a chart name — `cilium`, `cert-manager`, `monitoring`, `rook-operator`, `rook-cluster`, `nfs`, `external-secrets`, `cluster-api-operator`, `vcluster`, `loki`, `alloy`, `frr-k8s`, and the rest. Omitting it, or passing an unknown key, returns `400` with the valid keys listed.
+
+The response is what every version dropdown in the onboarding wizard renders:
+
+| Field | Meaning |
+| --- | --- |
+| `pinned` | The version the platform installs by default. **Empty means unpinned** — Flux resolves the latest on each reconcile, so the component auto-updates. |
+| `latest` | The newest *stable* version — deprecated and pre-release tags are skipped when picking it, though they still appear in `versions`. |
+| `versions` | Every version the source offers, newest first. |
+| `serving` | `internal` when installs pull from the mirror registry; absent when they pull from the public upstream. |
+| `mirrored` | Which of those versions are actually stocked in the mirror. A pick outside this list is fetched on install. |
+| `note` | Why the list is incomplete or empty. |
+
+<Note>
+  An unreachable upstream does **not** fail the call. The endpoint returns `200` with an empty `versions` array and a `note` explaining the fetch failure, so a wizard step degrades to "no update info available" instead of erroring the whole page. If a picker is empty, read `note` first — it usually names the cause outright.
+</Note>
+
+## Mirror status
+
+`GET /api/charts/mirror-status` is the platform-wide view: for every catalogue chart, where it resolves from right now and what the daily version worker last saw.
+
+```json
+{
+  "charts": [
+    { "key": "cilium", "chart": "cilium",
+      "upstreamRepo": "https://helm.cilium.io",
+      "pinned": "1.19.6", "source": "upstream", "override": "",
+      "latestUpstream": "1.20.0", "mirroredVersion": "",
+      "lastCheckedAt": "2026-08-16T06:52:31Z" },
+
+    { "key": "cert-manager", "chart": "cert-manager",
+      "upstreamRepo": "https://charts.jetstack.io",
+      "source": "upstream", "override": "internal",
+      "latestUpstream": "v1.21.1", "mirroredVersion": "",
+      "lastCheckedAt": "2026-08-16T06:52:30Z" },
+
+    { "key": "envoy-gateway", "chart": "gateway-helm",
+      "upstreamRepo": "oci://registry.example.com/charts",
+      "pinned": "v1.8.2", "source": "upstream", "override": "",
+      "latestUpstream": "v1.8.2", "mirroredVersion": "",
+      "lastCheckedAt": "2026-08-16T06:52:32Z",
+      "lastError": "no stable version found" }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `key` | The catalogue key you pass to `GET /api/charts/versions?source=`. |
+| `chart` / `upstreamRepo` | The chart name and the public source it would come from. |
+| `pinned` | The platform default. Empty means the chart tracks latest. |
+| `source` | Where it resolves **now**: `upstream` or `internal`. |
+| `override` | A per-chart pin of that choice — `""` (follow the platform default), `upstream`, or `internal`. |
+| `latestUpstream` | The newest stable version the daily worker saw upstream. |
+| `mirroredVersion` | The newest version present in the mirror registry. Empty means nothing is stocked. |
+| `lastCheckedAt` / `lastError` | When the worker last ran for this chart, and what went wrong. |
+
+When no default chart registry is configured, the response has no `registry` block and every row shows `source: "upstream"` — the platform installs each chart straight from its public source. Configure one and the response gains `registry`, `registryId` and `repoUrl`, and rows flip to `internal` as charts get stocked.
+
+<Note>
+  KubeVirt and CDI are absent from this list on purpose. They are mirrored as operator **images**, not Helm charts, so their state belongs to the pre-pull image inventory rather than the chart table.
+</Note>
+
+## When a version list is empty or a pull fails
+
+Mirror status is the first stop, because it separates "the platform cannot see any versions" from "the platform can see them but cannot fetch them".
+
+<Steps>
+  <Step title="Read the row for that chart">
+    A populated `latestUpstream` means discovery works and the problem is downstream. An empty one with a `lastError` means the worker itself could not read the source — that error is usually the whole answer.
+  </Step>
+  <Step title="Check where it resolves from">
+    `source: "internal"` with an empty `mirroredVersion` is the classic empty-picker case: installs are pointed at the mirror and the mirror has nothing. Either stock the chart or set that chart's `override` to `upstream`.
+  </Step>
+  <Step title="Suspect the registry credentials">
+    When `GET /api/charts/versions` comes back with a `note` about unreadable mirror stock, the registry is reachable but the credentials cannot list tags. Test them under **Settings → Registries** — a pull-only credential lists fine, a wrong one does not.
+  </Step>
+  <Step title="Only then look at the chart itself">
+    `lastError: "no stable version found"` on an OCI source means the tags exist but none parse as a stable release — common for charts whose tags are not plain semver. Installs still work with an explicit version; only the "latest" nudge is unavailable.
+  </Step>
+</Steps>
+
+If the version list is fine and the *install* is what fails, the problem has moved past chart discovery into Flux — check `GET /api/supervisors/<supervisor>/flux/status` and the HelmRelease's own conditions, which the [component-status model](/platform-health/overview) surfaces per component.
+
+## Permissions
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| Search ArtifactHub | `app:List` | `krn:vks:app:*` |
+| Read platform chart versions | `platform:GetDefaults` | `krn:vks:platform:charts` |
+| Read chart mirror status | `platform:GetDefaults` | `krn:vks:platform:charts` |
+
+Both chart reads share one action, so mirror status and version lists are granted together — they answer the same question from opposite ends.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="App catalog" icon="box-open" href="/gitops/app-catalog">
+    Turning a search result into a definition, and validating the chart before saving.
+  </Card>
+
+  <Card title="GitOps overview" icon="code-branch" href="/gitops/overview">
+    Where Flux reconciles the charts these versions describe.
+  </Card>
+
+  <Card title="Platform health" icon="heart-pulse" href="/platform-health/overview">
+    The component-status model that reports what a chart install actually did.
+  </Card>
+
+  <Card title="Storage overview" icon="hard-drive" href="/storage/overview">
+    A worked example of catalogue charts driving an install path end to end.
+  </Card>
+</CardGroup>
+
+<Note>
+  **Celum AI** uses the same three reads: `search_helm_charts` to find a chart, `get_chart_versions` for a platform component's available versions with the pinned default marked, and `get_chart_mirror_status` when a version list is empty or an install cannot pull.
+</Note>
