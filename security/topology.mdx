@@ -1,0 +1,140 @@
+---
+title: "Topology"
+description: "The traffic graph — node kinds and their listening ports, edge verdicts and policy coverage, the grouping and filter controls, and the coverage blind spots you must know about."
+icon: "circle-nodes"
+---
+
+The Topology tab is the map every other Security view drills out of. One call — `GET /api/supervisors/<supervisor>/security/flows/topology?since=1h` — returns the whole graph for the window: nodes for everything that talked, edges for every conversation, each edge carrying the verdict Cilium reached and whether a policy was responsible for it.
+
+A busy supervisor produces a graph of real size. A one-hour window on a supervisor running four guest clusters returned 160 nodes and 604 edges — which is exactly why the filters below matter more than the picture.
+
+![The Topology view — scope bar, window and verdict filters, rollup tiles (workloads, edges, denied flows, problem ports) and the flow graph](/images/security/topology.png)
+
+## Nodes are not all pods
+
+The graph deliberately mixes eight node kinds, because an operator asking "what does this talk to" does not care that half the answer is not a pod:
+
+| Kind | What it is |
+| --- | --- |
+| `workload` | A Deployment/DaemonSet/StatefulSet on the supervisor |
+| `vm-guest` | A node of a guest cluster running as a VM — carries a `cluster` field |
+| `vm` | A standalone VM |
+| `svc` | A Kubernetes Service, typically a LoadBalancer |
+| `node` | A supervisor node's own datapath address |
+| `iface` | A physical or bonded interface, with its `subnet` |
+| `ipam` | A known subnet from IPAM, resolved to its human name |
+| `external` | Anything off-cluster — an FQDN once DNS enrichment resolves it, otherwise `ext/<ip>` |
+
+Each node carries its **listening ports**, which is often the most useful part of the payload — it is the observed service surface of that workload, not what a manifest claims:
+
+```json
+{
+  "namespace": "proj-demo",
+  "workloadName": "api-frontend",
+  "kind": "workload",
+  "listenPorts": [
+    { "port": 9000, "protocol": "TCP", "action": "allow", "peers": 5, "flows": 927, "outcome": "established" },
+    { "port": 8123, "protocol": "TCP", "action": "allow", "peers": 1, "flows": 2193, "l7Protocol": "HTTP/1.1", "outcome": "established" }
+  ],
+  "totalFlows": 6240,
+  "totalBytes": 202017716
+}
+```
+
+`peers` is the discriminator worth scanning for: a port reached by one peer is a dependency, a port reached by dozens is a service. `l7Protocol` appears only where Cilium's L7 layer saw the traffic.
+
+Nodes that a policy selects also carry `coveredBy`:
+
+```json
+{
+  "namespace": "proj-demo",
+  "workloadName": "worker-0",
+  "kind": "vm-guest",
+  "cluster": "demo-cl",
+  "listenPorts": [
+    { "port": 10250, "protocol": "TCP", "action": "policy-protected", "peers": 3, "flows": 279, "outcome": "established" }
+  ],
+  "totalFlows": 13856,
+  "totalBytes": 87664664,
+  "coveredBy": [
+    { "name": "guest-access-demo-cl", "namespace": "proj-demo", "kind": "CiliumNetworkPolicy" }
+  ]
+}
+```
+
+## Edges carry the verdict
+
+Every edge is a (source, destination, port, protocol) roll-up with an `action` — the single most important field on the page:
+
+| `action` | Meaning |
+| --- | --- |
+| `allow` | Traffic was forwarded, and no Cilium policy claims credit for it |
+| `policy-protected` | Forwarded **and** attributable to a CiliumNetworkPolicy that allows it |
+| `unprotected` | Forwarded, and the workload has no policy covering it at all |
+| `reject` | Denied — `dropReasons` says why, e.g. `POLICY_DENIED` |
+
+The distinction between `allow` and `unprotected` is the point of the whole view: both mean traffic got through, but only `unprotected` means nothing would have stopped it. On the sample graph above, 518 edges were `allow`, 34 `policy-protected`, 30 `reject`, and 22 `unprotected`.
+
+```json
+{
+  "sourceNamespace": "capi-system", "sourceWorkloadName": "capi-controller-manager", "sourceKind": "workload",
+  "destNamespace": "proj-demo", "destWorkloadName": "control-plane-0", "destKind": "vm-guest",
+  "destPort": 6443, "protocol": "TCP",
+  "action": "policy-protected", "outcome": "established",
+  "flows": 57, "bytes": 4529338, "allowCount": 57
+}
+```
+
+A denied edge looks like this — note `bytes: 0`, because a connection that never established moves no payload:
+
+```json
+{
+  "sourceNamespace": "proj-demo", "sourceWorkloadName": "worker-0", "sourceKind": "vm-guest",
+  "destNamespace": "monitoring", "destWorkloadName": "node-metrics", "destKind": "workload",
+  "destPort": 0, "protocol": "ICMPv4",
+  "action": "reject", "flows": 66, "bytes": 0,
+  "rejectCount": 66, "dropReasons": ["POLICY_DENIED"]
+}
+```
+
+`outcome` adds the connection-level result (`established`, `delivered`, `policy-denied`) where conntrack could determine it, and `trafficDirection` (`INGRESS`/`EGRESS`) appears on edges observed from one side only.
+
+## Narrowing the graph
+
+The full graph is a starting point, not an answer. The controls map one-to-one onto query parameters:
+
+| Control | Parameter | Effect |
+| --- | --- | --- |
+| Flows source | `cluster=<cluster>` | Show a guest cluster's own flows instead of the supervisor's |
+| Granularity | `by=workload` (default), `by=pod`, `by=node` | One node per workload, per replica, or collapsed to physical nodes |
+| Origin | `origin=supervisor` / `origin=vcluster` | In a namespace where both coexist, pick which world to look at |
+| Policy coverage | `policy=covered`, `policy=uncovered`, `policy=allowed:<name>`, `policy=denied:<name>` | Keep only edges matching that coverage state or named policy |
+| Scope | `node=<node>`, `interface=<iface>` | Restrict to one Kubernetes node or one interface |
+| Labels | `labels=`, `labelsAll=` | Scope by Cilium labels — `labels` is an OR set, `labelsAll` requires all of them |
+
+`by=node` is the fastest way to answer "is this a workload problem or a machine problem". `origin` exists because a vcluster's pods are synced onto the host as ordinary pods that can carry byte-identical labels to a native twin — see [Pipeline & runtime](/security/pipeline-and-runtime#guest-clusters-and-vclusters).
+
+Two helper endpoints back these controls: `flows/dimensions` enumerates the nodes and interfaces present in the window, and `flows/labels` returns the label keys and values actually seen, so a filter never offers a value that returns nothing.
+
+## Coverage has known blind spots
+
+Edge coverage is computed by matching observed workloads against the workloads that applied policies select. That matching has three documented limits, and every one of them makes the graph look *less* protected than it is:
+
+<Warning>
+  **Identity indexing keys off four labels.** A workload is only recognized through `vm.kubevirt.io/name`, `app.kubernetes.io/name`, `app`, or `k8s-app`. A pod labelled only with a taxonomy of your own — `class=frontend`, say — is invisible to coverage, so its edges stay `unprotected` even when a policy is correctly enforcing on it. Always give workloads an `app` label in addition to whatever else you select on.
+</Warning>
+
+- **Only Cilium policies count.** Coverage walks `CiliumNetworkPolicy` and `CiliumClusterwideNetworkPolicy`. A standard `networking.k8s.io/v1` NetworkPolicy is enforced by Cilium perfectly well but is **not** counted — edges it protects render as `unprotected`. If you want the graph to reflect a policy, express it as a CNP (or apply both).
+- **Shared chart labels collapse.** When several tiers of one Helm chart share a single `app.kubernetes.io/name`, they fold into one coverage key while the graph still shows each Deployment separately. Intra-namespace edges between those tiers can stay `unprotected` although enforcement is correct.
+
+When the graph and reality disagree, the authoritative check is the policy itself: [flow matches](/security/policies#per-policy-detail) counts real flows the policy matched, and [drift](/security/policies#drift) compares what a policy declares against what was observed.
+
+The [edge quality](/security/flow-analytics#edge-quality) gauge on this tab tells you the other half of the trust question — what fraction of edges have both flow and byte data behind them.
+
+## From the graph to everything else
+
+The graph is where investigations start and then leave. A node with a suspicious ingress port leads to [Ingress Forensics](/security/forensics#ingress-who-is-reaching-this); an `external` peer that shouldn't be there leads to [Egress Forensics](/security/forensics#egress-where-does-this-go); an `unprotected` edge you want to close leads to author mode on this same tab, which is covered in [Network policies](/security/policies).
+
+<Note>
+  Celum AI reads the same graph. `get_flow_topology` returns nodes and edges with all the filters above, `get_policy_coverage` returns which policies cover which workloads, and `get_workload_identity` resolves the label set a selector would have to match.
+</Note>

@@ -1,0 +1,183 @@
+---
+title: "Flow analytics"
+description: "The aggregate views over the flow store — namespace chords, FQDN egress, L7 and DNS breakdowns, byte pairs, policy effectiveness, edge quality and application grouping — and what each one is actually good for."
+icon: "chart-simple"
+---
+
+Topology answers "who talks to whom". The analytics views answer the questions that come *before* you know where to look: what is the shape of this supervisor's traffic, where is it leaving, what protocol dominates, and how much of it is really protected. They are spread across the **Flow Visibility** and **Insights** tabs, and every one of them takes `since` (default `1h`) plus an optional `cluster` to scope to a guest.
+
+All of these are reads under `supervisor:GetSummary`.
+
+## Where the traffic is concentrated
+
+### Namespace chord
+
+`GET .../security/flows/ns-chord` returns namespace-to-namespace pairs, split by the same `action` taxonomy the [topology graph](/security/topology#edges-carry-the-verdict) uses:
+
+```json
+[
+  { "source": "proj-demo",    "target": "kamaji-system", "bytes": 66097890,  "flows": 15641, "action": "allow" },
+  { "source": "proj-demo",    "target": "ext",           "bytes": 100746204, "flows": 88003, "action": "policy-protected" },
+  { "source": "monitoring",   "target": "kube-system",   "bytes": 1101471,   "flows": 314,   "action": "unprotected" }
+]
+```
+
+Because the split is per action, one pair can appear several times — that is the point. A namespace pair that carries both `policy-protected` and `unprotected` rows tells you the policy exists but does not cover everything moving between them.
+
+### Bytes by pair
+
+`GET .../security/flows/bytes-by-pair` ranks individual workload pairs by volume, with direction preserved:
+
+```json
+[
+  {
+    "sourceNamespace": "rook-ceph", "sourceWorkloadName": "rook-ceph-operator",
+    "destNamespace": "nodes", "destWorkloadName": "node-1",
+    "bytesSent": 1329623673, "bytesRecv": 0, "bytesTotal": 1329623673,
+    "syscalls": 22297, "action": "unprotected"
+  }
+]
+```
+
+This is the capacity question rather than the security question: which two things are moving the data. `syscalls` comes from the runtime layer and is populated only where [Tetragon](/security/pipeline-and-runtime#tetragon) is running.
+
+## Where traffic leaves the cluster
+
+### FQDN egress
+
+`GET .../security/flows/fqdn-egress` ranks external destinations by bytes:
+
+```json
+[
+  { "fqdn": "helm.cilium.io.",       "bytes": 195259831, "flows": 1088 },
+  { "fqdn": "github.com.",           "bytes": 36622140,  "flows": 107 },
+  { "fqdn": "ext/203.0.113.24",      "bytes": 89428533,  "flows": 1785 },
+  { "fqdn": "registry-1.docker.io.", "bytes": 56403,     "flows": 8 }
+]
+```
+
+Read the `ext/<ip>` entries as a signal in themselves: they are destinations that could not be resolved to a name, either because the DNS visibility policy is missing or because the workload connected to a bare IP. A supervisor where *everything* is `ext/…` has a pipeline problem, not an application that dislikes DNS — see [Pipeline & runtime](/security/pipeline-and-runtime).
+
+<Note>
+  FQDNs arrive with a trailing dot, exactly as DNS emits them. Match on the trimmed form when you script against this endpoint.
+</Note>
+
+## What the traffic actually is
+
+### Top L7 paths
+
+`GET .../security/flows/top-l7` ranks HTTP method + URL by request count, with denials and average latency:
+
+```json
+[
+  { "method": "POST", "url": "https://logs.example.com/loki/api/v1/push", "protocol": "HTTP/2",   "requests": 16754, "denies": 8377, "avgMs": 0.169 },
+  { "method": "POST", "url": "https://metrics.example.com/api/v1/write",  "protocol": "HTTP/1.1", "requests": 9286,  "denies": 4643, "avgMs": 0.126 }
+]
+```
+
+A high `denies` next to a high `requests` on the same URL is the signature worth hunting: something is retrying into a policy that is dropping it, and the retry loop is invisible on any success-rate dashboard.
+
+### HTTP protocol mix
+
+`GET .../security/flows/http-mix` splits request counts by protocol version, in total and per namespace:
+
+```json
+{
+  "byNamespace": [
+    { "namespace": "proj-demo", "protocol": "HTTP/2",   "requests": 2873 },
+    { "namespace": "proj-demo", "protocol": "HTTP/1.1", "requests": 1410 }
+  ],
+  "total": [
+    { "protocol": "HTTP/2", "requests": 16768 },
+    { "protocol": "HTTP/1.1", "requests": 9748 }
+  ]
+}
+```
+
+Useful mostly as a migration tracker and as a sanity check that L7 visibility works at all — a namespace missing from `byNamespace` is one whose traffic never reached the L7 proxy.
+
+### DNS heatmap
+
+`GET .../security/flows/dns-heatmap` returns one-minute buckets of lookup counts per pod, as `{ "bucket": "2026-08-16T15:26:00Z", "pod": "proj-demo/api-frontend-7c9d5", "lookups": 36 }`. It earns its place during incidents: a pod whose lookup rate jumps by an order of magnitude is usually failing to resolve something and retrying, and that shows here long before it shows in application logs.
+
+### Raw L7 events
+
+When an aggregate raises a question, `GET .../security/flows/l7-events` returns the individual requests behind it — timestamp, source and destination workload, verdict, method, URL, protocol, the real client IP, and the policies that covered each side. Filter it hard (`srcNs`, `srcWl`, `dstNs`, `dstWl`, `anyNs`, `anyWl`, `verdict`, `method`, `codeBucket`, `protocol`, `destPort`, `after`, `before`); unfiltered it simply returns the most recent events.
+
+```json
+{
+  "time": "2026-08-16T16:26:28.648138Z",
+  "srcNs": "proj-demo", "srcWl": "worker-0", "srcIp": "10.42.0.123",
+  "dstNs": "gateway-api", "dstWl": "cilium-gateway-shared-gateway",
+  "destPort": 443, "protocol": "TCP", "verdict": "DROPPED",
+  "method": "POST", "url": "https://metrics.example.com/api/v1/write",
+  "httpProtocol": "HTTP/1.1", "attributedFqdn": "metrics.example.com",
+  "coveredBySrc": ["proj-demo/guest-access-demo-cl"]
+}
+```
+
+`coveredBySrc` and `coveredByDst` make this the definitive answer to "which policy touched this request".
+
+## How protected the supervisor is
+
+### Policy effectiveness
+
+`GET .../security/flows/policy-effectiveness` is the namespace-level scorecard, counting flows in each verdict class plus total bytes:
+
+```json
+[
+  { "namespace": "kubevirt",   "allow": 0,     "unprotected": 12593, "policyProtected": 0,   "reject": 0,    "bytesTotal": 213998698 },
+  { "namespace": "monitoring", "allow": 0,     "unprotected": 7113,  "policyProtected": 0,   "reject": 4361, "bytesTotal": 544222564 },
+  { "namespace": "proj-demo",  "allow": 12366, "unprotected": 0,     "policyProtected": 741, "reject": 0,    "bytesTotal": 458367437 }
+]
+```
+
+Rank by `unprotected` and you have a work queue: those are the namespaces where nothing would have stopped the traffic. Do read the [coverage caveats](/security/topology#coverage-has-known-blind-spots) first — a namespace can look wide open here purely because its workloads lack an `app` label, or because its policies are `networking.k8s.io/v1` NetworkPolicies, which this count does not see.
+
+### Edge quality
+
+`GET .../security/flows/edge-quality` is a single object that tells you how much of the graph is fully evidenced:
+
+```json
+{
+  "windowSec": 3600,
+  "totalEdges": 456, "bothEdges": 376, "flowsOnlyEdges": 46, "bytesOnlyEdges": 34, "neitherEdges": 0,
+  "totalFlows": 384453, "totalBytes": 12544900272,
+  "pctBoth": 82.46, "pctFlowsOnly": 10.09, "pctBytesOnly": 7.46
+}
+```
+
+Verdicts come from Hubble, byte counts largely from conntrack, and the two are correlated per edge. `pctBoth` is therefore a trust gauge for everything else on this page: `flowsOnly` edges have a verdict but no reliable volume, `bytesOnly` edges have volume but no verdict. A sudden drop in `pctBoth` means one of the two sources degraded, not that traffic changed.
+
+### Applications
+
+`GET .../security/applications` groups workloads into logical applications by the label that ties them together, so a policy can be written against a thing rather than a list of pods:
+
+```json
+[
+  {
+    "name": "demo-cl", "namespace": "proj-demo", "kind": "cluster",
+    "key": "cluster.x-k8s.io/cluster-name",
+    "workloads": ["control-plane-0", "worker-0", "worker-1"],
+    "flows": 349147
+  },
+  {
+    "name": "argocd", "namespace": "argocd", "kind": "application",
+    "key": "app.kubernetes.io/part-of",
+    "workloads": ["argocd-server", "argocd-repo-server", "argocd-redis"],
+    "flows": 13967
+  }
+]
+```
+
+`kind: "cluster"` entries are guest clusters seen from the supervisor side; `kind: "application"` entries are ordinary label groupings. This endpoint backs the application picker in policy authoring — see [Network policies](/security/policies).
+
+## The Sessions tab
+
+Sessions is the same store viewed as conversations rather than aggregates. `GET .../security/flows/sessions` returns top workload-pair sessions, filtered by Cilium labels — `labels=k8s:io.kubernetes.pod.namespace=proj-demo` to scope to a namespace, `labels=k8s:app=api-frontend` to scope to a workload, comma-separated to combine — with `since` (default `15m`) and `limit` (max 500). `sessions/pods` expands one row into its individual pods.
+
+Three siblings round out the tab: `flows/summary` for the headline counters, `flows/top-talkers` for the busiest endpoints, and `flows/denials` for recent policy-denied flows. `flows/pods` lists the pods present in the window, which is what the namespace and workload pickers are built from.
+
+<Note>
+  Celum AI covers all of this with three tools: `get_flow_analytics` (one call per view — `ns-chord`, `fqdn-egress`, `top-l7`, `http-mix`, `dns-heatmap`, `bytes-by-pair`, `policy-effectiveness`, `edge-quality`, `applications`), `get_l7_events` for the raw requests behind an aggregate, and `get_top_talkers` for the quick "who is loudest" question.
+</Note>
