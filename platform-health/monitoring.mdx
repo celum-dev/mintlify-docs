@@ -1,0 +1,109 @@
+---
+title: "Monitoring"
+description: "The per-supervisor Prometheus stack — install state and versions, the ServiceMonitor inventory, opt-in hardware exporters, and what to read when the release is not ready."
+icon: "chart-line"
+---
+
+Each supervisor runs its own **kube-prometheus-stack** — Prometheus, Alertmanager, Grafana, kube-state-metrics, and node-exporter — installed by the onboarding wizard into the `monitoring` namespace as a Flux HelmRelease. The Monitoring panel is a live read of the stack: release state, deployed versions, every ServiceMonitor Prometheus scrapes, and the optional hardware exporters.
+
+## Install state and versions
+
+The status reports the release identity and both version signals:
+
+| Field | Example | Meaning |
+| --- | --- | --- |
+| `releaseName` | `kube-prometheus-stack` | The HelmRelease in the `monitoring` namespace |
+| `chartVersion` | `86.2.3` | Deployed chart version |
+| `appVersion` | `v0.91.0` | The prometheus-operator application version the chart ships |
+| `status` | `deployed` | Helm release status |
+
+Alongside it, the `helmRelease` block carries the `Ready` condition with reason and message — see [the status model](/platform-health/overview#the-status-model). The panel also shows the **deployed configuration** the release was installed with, and the **desired configuration** the form would apply next:
+
+| Setting | Example |
+| --- | --- |
+| Prometheus storage | `20Gi` |
+| Grafana storage | `5Gi` |
+| Retention | 7 days |
+| Scrape interval | `30s` |
+| Storage class | `ceph-block` |
+
+Re-applying with the same values is a no-op reconcile; changing storage or retention triggers a Helm upgrade with the new values.
+
+## ServiceMonitors
+
+The status lists every `ServiceMonitor` on the supervisor — the objects that tell Prometheus what to scrape — with namespace, labels, and endpoint count. A typical supervisor's inventory spans well beyond the stack's own namespace:
+
+| ServiceMonitor | Namespace | Endpoints |
+| --- | --- | --- |
+| `cilium-agent`, `cilium-operator`, `hubble`, `cluster-agent` | `kube-system` | 1 each |
+| `kube-prometheus-stack-prometheus`, `-alertmanager`, `-grafana`, `-operator`, `-kubelet`, … | `monitoring` | 1–3 each |
+| `rook-ceph-mgr`, `rook-ceph-exporter` | `rook-ceph` | 1 each |
+| `smartctl-exporter`, `dcgm-exporter` | `monitoring` | 1 each |
+
+Some of these are created by their own operators (CDI, KubeVirt, Rook); the rest are **platform-managed**: Celum applies a known set covering Cilium, Hubble, the cluster agent, Ceph, and the hardware exporters. The install form lets you select which platform-managed ServiceMonitors to enable — an empty selection means the full default set. A **re-apply ServiceMonitors** action recreates the entire platform-managed set at any time; it is idempotent and safe to run after an operator upgrade removed one.
+
+## Opt-in exporters
+
+Hardware and probe exporters are **not** part of the default install — each is a separate chart you enable per supervisor:
+
+| Exporter | What it measures | Default |
+| --- | --- | --- |
+| SMART disk health (`smartctl-exporter`) | NVMe/SSD SMART metrics — disk health, temperature, wear | Off |
+| NVIDIA GPU (`dcgm-exporter`) | GPU utilization, memory, temperature via DCGM | Off |
+| Blackbox prober | HTTP/TCP/ICMP/DNS endpoint probing — uptime and latency | Off |
+| SNMP exporter | Network devices — switches, routers, firewalls | Off |
+| JSON exporter | Metrics scraped from arbitrary JSON HTTP endpoints | Off |
+
+The status reports each exporter's installed state, so the panel doubles as the inventory of what this supervisor actually collects. Install only what the hardware justifies — the GPU exporter on a GPU-less supervisor is a DaemonSet doing nothing.
+
+## Exposed routes
+
+When the supervisor runs a shared Gateway, the stack's UIs are published on it — the status lists the routes with hostname, address, and TLS state, e.g. `grafana.<domain>`, `prometheus.<domain>`, and `loki.<domain>` behind a single shared-gateway address. See [Gateways & Routes](/networking/gateways-and-routes) for how the shared Gateway works.
+
+## When the release is not ready
+
+The most common monitoring failure is simply an **unready HelmRelease** — and the panel surfaces the chart controller's reason and message directly:
+
+<Steps>
+  <Step title="Read the condition">
+    The panel footer shows the `Ready` condition. `InstallFailed` / `UpgradeFailed` reasons come with the exact Helm error — a values problem, a timeout, an immutable-field conflict.
+  </Step>
+  <Step title="Check version drift">
+    `lastAttemptedRevision` newer than `revision` means an upgrade is failing while the old version keeps running — fix the reported error, then re-apply.
+  </Step>
+  <Step title="Recover from a stuck rollback">
+    If Helm is wedged mid-rollback, the panel's recover action resets the release state so the next reconcile can proceed.
+  </Step>
+</Steps>
+
+<Note>
+  A `Ready` release with missing metrics is a different failure class: check that the relevant ServiceMonitor exists (re-apply the set), and that the target's namespace lets Prometheus reach it.
+</Note>
+
+## Permissions
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| Read stack status and versions | `monitoring:GetStatus` | `krn:vks:supervisor:<supervisor>:monitoring:*` |
+| Install, re-apply, recover the stack; re-apply ServiceMonitors | `monitoring:Install` | `krn:vks:supervisor:<supervisor>:monitoring:*` |
+| Install or remove opt-in exporters | `supervisor:Bootstrap` | `krn:vks:supervisor:<supervisor>` |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Platform health overview" icon="heart-pulse" href="/platform-health/overview">
+    The status model every panel shares.
+  </Card>
+
+  <Card title="Logs" icon="file-lines" href="/platform-health/logs">
+    Loki and Alloy — installed into the same `monitoring` namespace.
+  </Card>
+
+  <Card title="Infrastructure & nodes" icon="server" href="/platform-health/infrastructure">
+    The node capacity and hardware the exporters report on.
+  </Card>
+
+  <Card title="Gateways & Routes" icon="globe" href="/networking/gateways-and-routes">
+    The shared Gateway that publishes Grafana and Prometheus.
+  </Card>
+</CardGroup>
