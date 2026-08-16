@@ -20,3 +20,6 @@ The UI route and platform version enable drift-driven retakes.
 | supervisor-overview.png | concepts/supervisors-and-clusters | /s/{supervisor} (full page, live capture — replaced the Pencil render) | v1.47.0 | 2026-08-16 |
 | supervisor-infrastructure.png | concepts/supervisors-and-clusters | /s/{supervisor}/infrastructure | pre-manifest (Pencil render) | 2026-08-12 |
 | projects-list.png | concepts/projects | /s/{supervisor}/projects (full page, live capture — replaced the Pencil render) | v1.47.0 | 2026-08-16 |
+| clusters/cluster-detail.png | clusters/overview | /s/{supervisor}/clusters/{cluster}?namespace={ns} (full page) | v1.47.0 | 2026-08-16 |
+| clusters/cluster-detail-helm.png | clusters/day-2-operations | /s/{supervisor}/clusters/{cluster}?namespace={ns} (full page, Helm Releases expanded) | v1.47.0 | 2026-08-16 |
+| clusters/create-capi-form.png | clusters/create | /s/{supervisor}/clusters/create-capi (full page, talos-kubevirt class selected) | v1.47.0 | 2026-08-16 |

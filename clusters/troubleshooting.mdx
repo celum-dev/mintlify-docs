@@ -1,0 +1,92 @@
+---
+title: "Troubleshooting clusters"
+description: "The triage order for an unhealthy tenant — fleet health, machines, tenant events, then pod events and logs — plus the known patterns that look like failures but aren't."
+icon: "bug"
+---
+
+Cluster problems announce themselves at different depths — a cluster that never provisions fails at the Cluster API layer, a crashing app fails three layers further in. Working top-down keeps you from reading pod logs for what is actually a machine that never booted.
+
+## The triage order
+
+<Steps>
+  <Step title="Fleet health — which cluster, how badly">
+    `GET /api/clusters/health` (the cluster list page) gives per-cluster health across the supervisor. Start here to confirm *which* cluster is unhealthy and whether its API is reachable at all — an unreachable tenant makes every deeper read fail, and that is your answer, not an obstacle.
+  </Step>
+  <Step title="Machines and phase — does the cluster physically exist">
+    `GET /api/clusters/<cluster>/nodes` lists the Cluster API machines. A cluster stuck in `Provisioning`, or a worker count that never converges on the desired replicas, is an infrastructure-provider problem: the cluster's events page (`/s/<supervisor>/clusters/<cluster>/events`) carries the provider's own reason. Nothing inside the tenant can be fixed until the machines run.
+  </Step>
+  <Step title="Events inside the tenant — what Kubernetes itself is complaining about">
+    `GET /api/clusters/<cluster>/events` is the tenant's own event stream. Warnings with high counts are the signal — this real excerpt points directly at a crash-looping container:
+
+    ```json
+    { "type": "Warning", "reason": "BackOff",
+      "message": "Back-off restarting failed container frontend-check in pod loadgenerator-5f47d56dcb-zddlc_default(...)",
+      "count": 895, "objectKind": "Pod", "objectName": "loadgenerator-5f47d56dcb-zddlc" }
+    ```
+  </Step>
+  <Step title="Pod events and logs — the actual failure">
+    Follow the object the event names: `GET /api/clusters/<cluster>/workload-pods?podNamespace=<ns>` shows status and restart counts, `.../workload-pod-events` narrows to one pod, and `.../workload-pod-logs` reads what the container printed before dying. A `CrashLoopBackOff` with four-digit restarts has been failing for days — the first log lines after startup usually say why.
+  </Step>
+</Steps>
+
+When no curated view covers the resource you suspect, `GET /api/clusters/<cluster>/kubectl-get` fetches any object's full YAML — see [the escape hatch](/clusters/day-2-operations#the-kubectl-get-escape-hatch).
+
+## Patterns that look like failures but aren't
+
+### Metrics panel empty — `available: false`
+
+`GET /api/clusters/<cluster>/metrics` returns `200` with `"available": false` and zeroed numbers when the tenant has **no metrics source installed**. This is the documented fallback, not an outage:
+
+```json
+{ "available": false, "source": "", "cpu": { "used": 0, "total": 0, "percent": 0 } }
+```
+
+Fix by enabling the monitoring addon (or installing metrics-server in the tenant) — not by debugging connectivity.
+
+### Cluster reachable but views are empty — cold-start partial status
+
+Right after the backend starts (or the first time a supervisor is queried), list endpoints can return `200` with an **empty result** while caches warm in the background — the health endpoint explicitly serves an empty list on a cold cache rather than blocking on a slow probe. The UI polls and fills in within moments. An empty cluster list or blank health column seconds after a deploy means "not warmed yet"; conclude an outage only if it persists across refreshes.
+
+### Creation rejected for overlapping CIDRs
+
+Cluster creation validates pod/service CIDRs against the supervisor and every existing cluster, and rejects explicit overlaps — a guest whose pod CIDR collides with the supervisor's is unreachable from the supervisor's own pods, so the rejection is protecting you. Leave the CIDR fields blank and the allocator picks free subnets automatically. See [Create a cluster](/clusters/create#preview-and-create).
+
+### Talosconfig download returns 404
+
+`GET /api/clusters/<cluster>/talosconfig` returns `404` for any non-Talos cluster — the credential simply does not exist for that provider. Same shape for a vcluster instance kubeconfig whose export was never enabled ([details](/clusters/hosted-control-planes#per-instance-kubeconfig)).
+
+## When the platform layer is the suspect
+
+If *every* cluster on a supervisor misbehaves the same way, stop debugging tenants and check the supervisor's components — the CAPI engine, addon engine, and providers all report through the [component-status model](/platform-health/overview):
+
+- `GET /api/supervisors/<supervisor>/capi/status` — operator and provider readiness with the chart controller's reason and message.
+- `GET /api/supervisors/<supervisor>/capi/addons/status` — the CAAPH engine and each `HelmChartProxy`; a proxy that is not `ready` explains a missing CNI or agent in *new* guests.
+- `POST /api/supervisors/<supervisor>/capi/recover-rollback` — recovers the engine from a stuck Helm rollback state when its status shows a failed release.
+
+## Permissions
+
+Triage is read-only: `cluster:GetHealth`, `cluster:GetNodes`, `cluster:GetEvents`, and `cluster:GetWorkloads` cover the whole ladder, with `cluster:GetResources` for kubectl-get and `capi:GetStatus` for the engine checks.
+
+<Note>
+  **Celum AI** runs this same ladder on request — `get_clusters_health`, `get_cluster_events`, and `get_cluster_pod_logs` are the assistant's versions of the steps above, so "why is demo-cl unhealthy?" walks the identical APIs.
+</Note>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Day-2 operations" icon="gauge-high" href="/clusters/day-2-operations">
+    Every read used above, with fuller payload examples.
+  </Card>
+
+  <Card title="Platform health" icon="heart-pulse" href="/platform-health/overview">
+    The component-status model the supervisor-level checks build on.
+  </Card>
+
+  <Card title="Create a cluster" icon="circle-plus" href="/clusters/create">
+    The creation-time failure table, including CIDR and quorum mistakes.
+  </Card>
+
+  <Card title="Storage overview" icon="hard-drive" href="/storage/overview">
+    The parallel triage ladder for Pending PVCs inside tenants.
+  </Card>
+</CardGroup>

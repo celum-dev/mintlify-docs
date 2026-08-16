@@ -1,0 +1,108 @@
+---
+title: "Templates & addons"
+description: "Cluster templates — reusable blueprints with Go-template variables, rendered and previewed before anything is created — and cluster addons pushed into guest clusters as ClusterResourceSets."
+icon: "copy"
+---
+
+Two kinds of reusable building blocks live under **Settings → Cluster templates**: **cluster templates** (a blueprint that becomes a whole cluster) and **cluster addons** (a bundle of manifests delivered into existing clusters). Both are stored in Celum's database, so they work identically across every supervisor.
+
+## Cluster templates
+
+A template is a named blueprint with four parts:
+
+| Field | Meaning |
+| --- | --- |
+| `name`, `description` | Identity shown in the template picker |
+| `provider` | `generic`, `tanzu`, or `talos` — selects how the `Cluster` resource is auto-generated |
+| `templateData` | Infrastructure fields (Kubernetes version, cluster class, storage class, CIDRs, …) plus `customFiles[]` — extra YAML files whose path *and* content are Go templates |
+| `variables` | Custom variables, each with a `name`, `label`, `default`, and `description` — surfaced as form fields in the create wizard |
+
+Files are rendered with Go templating: `{{.VariableName}}` anywhere in a custom file is substituted at creation time. Besides the custom variables, every template can use the **built-in variables** (`ClusterName`, `Supervisor`, `SupervisorServerUrl`, `SourceRepo`, `StorageClass`, `PodsCIDR`, and the rest — the full list is on the [create page](/clusters/create#template-variables)). Built-ins are auto-injected from the request, the supervisor, and the template's own infrastructure fields; an explicit value you pass always wins over an injected one.
+
+<Note>
+  Templates are validated at save time: every `{{.Name}}` referenced in `customFiles` must be either a declared variable or a known built-in. A typo fails the save, not the eventual cluster creation.
+</Note>
+
+### Render, preview, create
+
+Three endpoints take a template from blueprint to cluster, in increasing order of commitment:
+
+<Steps>
+  <Step title="Render — resolve the variables">
+    `POST /api/cluster-templates/<id>/render` merges variable defaults with the values you pass and returns the fully substituted `templateData`. Nothing touches a supervisor. Used by the wizard to keep its form live.
+  </Step>
+  <Step title="Preview — see the exact files">
+    `POST /api/cluster-templates/<id>/preview` renders every custom file *and* the auto-generated `Cluster` resource, returning the complete file set with paths. Still nothing created — this is the review screen before the confirm button.
+  </Step>
+  <Step title="Create — apply the result">
+    `POST /api/cluster-templates/<id>/create` renders the same file set and applies it. **How** it applies depends on the supervisor: with an attached GitOps repository the files are committed under `clusters/<cluster>/` in one atomic commit; without one they are applied directly to the supervisor's API. You never choose the mode — the repository attachment is the signal.
+  </Step>
+</Steps>
+
+Create enforces two guardrails regardless of mode:
+
+- **`StorageClass` is required** — via a template variable default, the infrastructure fields, or an explicit override. Creation fails fast with a clear message otherwise.
+- **CIDRs must not collide.** Leave the pod/service CIDRs blank and Celum allocates free subnets automatically, checked against the supervisor and every existing cluster. Explicit CIDRs that overlap an existing cluster are rejected with `409 Conflict`.
+
+Unless your `customFiles` already include a `cluster.yaml`, the provider (`generic` / `tanzu` / `talos`) dispatches an auto-generated `Cluster` resource from the infrastructure fields, so a minimal template needs no hand-written Cluster CR at all.
+
+## Cluster addons
+
+An addon is a bundle of Kubernetes manifests (stored as ConfigMaps) plus a cluster selector — the database-backed form of a Cluster API **ClusterResourceSet**. Addons let you capture "every cluster with label X gets these manifests" once and reuse it everywhere.
+
+| Task | Endpoint |
+| --- | --- |
+| List / read | `GET /api/cluster-addons` · `GET /api/cluster-addons/<id>` |
+| Create / update / delete | `POST /api/cluster-addons` · `PUT /api/cluster-addons/<id>` · `DELETE /api/cluster-addons/<id>` |
+| Import from a live cluster | `POST /api/cluster-addons/import` |
+| Push to a supervisor | `POST /api/supervisors/<supervisor>/cluster-addons/<addonId>/push` |
+| Toggle per guest cluster | `PUT /api/supervisors/<supervisor>/guest-clusters/<cluster>/addons` |
+
+**Import** reads an existing ClusterResourceSet — its selector, strategy, and referenced ConfigMaps — off a supervisor and saves it as an addon, so an addon that was hand-built on one supervisor becomes a portable blueprint.
+
+**Push** applies the addon onto a supervisor: it recreates the ConfigMaps and the ClusterResourceSet there, after which Cluster API delivers the manifests into every matching guest cluster.
+
+<Note>
+  A ClusterResourceSet only matches clusters **in its own namespace**. Pushes default to the `default` namespace; for clusters living in a [project](/concepts/projects) namespace, pass `?namespace=proj-demo` on the push so the CRS lands next to the clusters it should select.
+</Note>
+
+## Permissions
+
+| Task | Action |
+| --- | --- |
+| List / read templates (includes render + preview) | `cluster-template:List` / `cluster-template:Get` |
+| Create / update / delete templates | `cluster-template:Create` / `cluster-template:Update` / `cluster-template:Delete` |
+| Create a cluster from a template | `cluster:Create` |
+| List / read addons | `cluster-addon:List` / `cluster-addon:Get` |
+| Create / update / delete addons | `cluster-addon:Create` / `cluster-addon:Update` / `cluster-addon:Delete` |
+| Import an addon from a live cluster | `cluster-addon:Import` |
+| Push an addon to a supervisor | `cluster-addon:Push` |
+| Toggle addons on a guest cluster | `cluster-addon:Toggle` |
+
+<Note>
+  Cloud-init templates (Linux) and sysprep templates (Windows) are the VM-side siblings of cluster templates — same variable model, applied to individual machines. They are covered under [Create a VM](/vms/create).
+</Note>
+
+<Note>
+  **Celum AI** answers template questions through the same APIs — `list_cluster_templates` and `get_cluster_template` return the identical blueprints, variables, and files the settings page shows.
+</Note>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Create a cluster" icon="circle-plus" href="/clusters/create">
+    The wizard that consumes these templates, including the built-in variable list.
+  </Card>
+
+  <Card title="Clusters overview" icon="circle-nodes" href="/clusters/overview">
+    Where templates fit among the four cluster models.
+  </Card>
+
+  <Card title="Storage classes & profiles" icon="layer-group" href="/storage/classes-and-profiles">
+    What the required `StorageClass` variable should point at.
+  </Card>
+
+  <Card title="Permissions reference" icon="list-check" href="/reference/permissions">
+    Every `cluster-template:*` and `cluster-addon:*` action with its KRN.
+  </Card>
+</CardGroup>

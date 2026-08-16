@@ -1,0 +1,117 @@
+---
+title: "Hosted control planes"
+description: "vcluster instances — full Kubernetes control planes running as pods on the supervisor — and Kamaji Talos workers, which attach real Talos nodes to a hosted control plane."
+icon: "boxes-stacked"
+---
+
+A hosted control plane inverts the usual cost structure of a tenant cluster: instead of dedicating VMs to etcd and API servers, the control plane runs as ordinary pods on the supervisor. Celum ships two flavors — **vcluster** (control plane *and* workloads share the supervisor's nodes) and **Kamaji with Talos workers** (hosted control plane, real worker VMs).
+
+## When to choose a hosted control plane
+
+| Need | Choose |
+| --- | --- |
+| Own kernel, CNI, node config, or strong node isolation | A full [topology cluster](/clusters/overview#topology-clusters) |
+| API-server isolation, own CRDs/RBAC, seconds to create | **vcluster** |
+| Hosted control plane but real Talos worker nodes | **Kamaji Talos workers** |
+
+A vcluster is the cheapest and fastest tenant you can hand out; its limit is that workloads still run on the supervisor's shared nodes. Kamaji keeps only the control plane shared and gives the tenant its own machines.
+
+## vcluster
+
+### The engine
+
+The vcluster provider is installed from the onboarding wizard and reports through the standard [component-status model](/platform-health/overview):
+
+| Task | Endpoint | Action |
+| --- | --- | --- |
+| Install the engine / an instance | `POST /api/supervisors/<supervisor>/vcluster/install` | `vcluster:Install` |
+| Status + instance list | `GET /api/supervisors/<supervisor>/vcluster/status` | `vcluster:GetStatus` |
+| Recover a stuck Helm rollback | `POST /api/supervisors/<supervisor>/vcluster/recover-rollback` | `vcluster:Install` |
+
+The install call takes an `instanceName` (a DNS-1123 slug of at most 30 characters), and defaults the namespace to `vcluster-<instance>` — so several instances coexist on one supervisor, each in its own namespace. Options cover the service type, storage size and class (defaulting to the supervisor's default StorageClass), a resource profile (`small` / `medium` / `large`), an optional ServiceMonitor for the tenant control plane, and optional OIDC so end users can `kubectl` into the tenant with their platform identity.
+
+<Note>
+  High availability via embedded etcd is a licensed feature of the upstream chart and is rejected by Celum's OSS-only install — requests with `highAvailability` enabled fail validation rather than silently degrading.
+</Note>
+
+### vclusters as CAPI clusters
+
+`POST /api/supervisors/<supervisor>/capi/vclusters` creates a vcluster **as a Cluster API cluster**: a plain `Cluster` CR whose infrastructure and control-plane references both point at a single `VCluster` CR. That flat shape means the instance shows up in `GET /api/clusters` alongside every other tenant (provider `vCluster`), and the provider writes the standard `<cluster>-kubeconfig` Secret — so `GET /api/clusters/<cluster>/kubeconfig` and the whole [day-2 surface](/clusters/day-2-operations) work unchanged. Deleting it is the same canonical `DELETE /api/supervisors/<supervisor>/capi/clusters/<cluster>` cascade, which removes the `VCluster` CR along with the Cluster.
+
+### Per-instance kubeconfig
+
+Wizard-installed instances export their tenant kubeconfig to a Secret, downloadable as YAML:
+
+```
+GET /api/supervisors/<supervisor>/vcluster/<instance>/kubeconfig
+```
+
+A `404` here means the chart has not written the Secret yet — or kubeconfig export was never enabled for the instance — not that the instance is broken.
+
+## Kamaji Talos workers
+
+The CAPI engine ships a Kamaji control-plane provider next to the Talos one (visible in `GET /api/supervisors/<supervisor>/capi/status`):
+
+```json
+{
+  "controlPlane": {
+    "kamaji": { "exists": true, "ready": true, "installedVersion": "v0.20.0" },
+    "talos": { "exists": true, "ready": true, "installedVersion": "v0.6.0-pr251" }
+  }
+}
+```
+
+A Kamaji-class topology cluster runs its tenant control plane as pods on the supervisor and attaches a pool of **Talos worker VMs**. Those workers need a machine configuration that can only be assembled after the control plane is up — the tenant CA, a bootstrap token, and the control-plane endpoint. That is what the reconcile endpoint does:
+
+```
+POST /api/supervisors/<supervisor>/capi/clusters/<cluster>/kamaji-talos-workers
+```
+
+It gathers the runtime pieces, renders the worker machine config into the cluster's topology, and rolls the worker pool. The call is idempotent — the generated worker identity is persisted on the supervisor, so re-running it produces a byte-identical config and does **not** cause spurious node rollouts.
+
+<Steps>
+  <Step title="Create the Kamaji-class cluster">
+    Via the [ClusterClass flow](/clusters/create). Celum fires the worker reconcile automatically in the background once the control plane reports Ready.
+  </Step>
+  <Step title="Re-run when scaling later">
+    Bootstrap tokens expire. If you scale the worker pool well after creation, call the reconcile again first — only a token close to expiry triggers a re-render, so this is safe to do routinely.
+  </Step>
+</Steps>
+
+<Note>
+  This integration is marked experimental in the backend. The moving parts — token lifetimes, config rotation on existing clusters — are handled for you, but expect it to evolve.
+</Note>
+
+## Permissions
+
+| Task | Action |
+| --- | --- |
+| Install the vcluster engine / instances, recover rollback | `vcluster:Install` |
+| Read vcluster status, download an instance kubeconfig | `vcluster:GetStatus` |
+| Create a vcluster as a CAPI cluster | `cluster:Create` |
+| Reconcile Kamaji Talos workers | `cluster:Update` |
+| Delete a hosted-CP cluster | `cluster:Delete` |
+
+<Note>
+  **Celum AI** reads the same state — `get_component_status` (component `vcluster` or `capi`), `list_clusters`, and `get_guest_cluster` answer "is the vcluster engine healthy?" or "how is this hosted cluster built?" from the identical APIs.
+</Note>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Clusters overview" icon="circle-nodes" href="/clusters/overview">
+    The four cluster models side by side, including when a full cluster wins.
+  </Card>
+
+  <Card title="Access & credentials" icon="key" href="/clusters/access-and-credentials">
+    The kubeconfig paths for both hosted flavors.
+  </Card>
+
+  <Card title="Day-2 operations" icon="gauge-high" href="/clusters/day-2-operations">
+    The tenant views that work identically on hosted control planes.
+  </Card>
+
+  <Card title="Projects" icon="folder-tree" href="/concepts/projects">
+    The namespace + addressing model hosted clusters are placed into.
+  </Card>
+</CardGroup>
