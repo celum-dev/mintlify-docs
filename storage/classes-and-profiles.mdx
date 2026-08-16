@@ -1,0 +1,127 @@
+---
+title: "Classes & profiles"
+description: "StorageClasses and their CDI StorageProfiles — clone strategy, access-mode × volume-mode support, the test-PVC diagnostic, and which class to give VMs and golden images."
+icon: "layer-group"
+---
+
+Two lists describe what a supervisor's storage can actually do. **StorageClasses** are what everything provisions against; **CDI StorageProfiles** — one per class, maintained by KubeVirt's containerized data importer — declare each class's clone strategy and the access-mode/volume-mode combinations it supports. The second list is the one that answers the questions that matter for VMs: *will cloning be fast* and *can this VM live-migrate*.
+
+## StorageClasses
+
+The class list shows every StorageClass on the supervisor — the ones Celum's backends created and any third-party classes provisioned outside the wizard — with the facts a picker needs:
+
+```json
+{
+  "items": [
+    { "name": "ceph-block", "provisioner": "rook-ceph.rbd.csi.ceph.com",
+      "isDefault": true, "reclaimPolicy": "Delete", "volumeBindingMode": "Immediate" },
+    { "name": "ceph-san-block", "provisioner": "rook-ceph.rbd.csi.ceph.com",
+      "isDefault": false, "reclaimPolicy": "Delete", "volumeBindingMode": "Immediate" }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `isDefault` | Carries the cluster's default-class annotation — a claim with no class lands here |
+| `reclaimPolicy` | `Delete` reclaims the volume with the claim; `Retain` keeps it for manual recovery |
+| `volumeBindingMode` | `Immediate` binds at creation; `WaitForFirstConsumer` waits for a pod, binding topology-aware |
+
+Every storage-class picker in the product — monitoring PVCs, VM disks, image imports, tenant-cluster defaults — reads this one list, sorted default-first. When a wizard step needs a class and you did not pick one, the cluster default wins.
+
+<Note>
+  Exactly **one** class should carry the default annotation. Two defaults make claim placement provisioner-dependent; zero means every claim must name its class explicitly. The backends never set the default flag without being asked.
+</Note>
+
+## CDI StorageProfiles
+
+CDI mirrors each StorageClass with a StorageProfile and fills in what the class's CSI driver supports. The profile is what CDI consults when a DataVolume — a VM disk, an imported image — leaves access mode or volume mode unspecified:
+
+```json
+{
+  "name": "ceph-block",
+  "provisioner": "rook-ceph.rbd.csi.ceph.com",
+  "isDefault": true,
+  "cloneStrategy": "csi-clone",
+  "dataImportCronSourceFormat": "snapshot",
+  "claimPropertySets": [
+    { "accessModes": ["ReadWriteMany"], "volumeMode": "Block" },
+    { "accessModes": ["ReadWriteOnce"], "volumeMode": "Block" },
+    { "accessModes": ["ReadWriteOnce"], "volumeMode": "Filesystem" }
+  ],
+  "supportsRWO": true, "supportsRWX": true,
+  "supportsBlock": true, "supportsFilesystem": true,
+  "rwxVolumeMode": "Block"
+}
+```
+
+**`claimPropertySets`** is the authoritative capability list: each entry is an access-mode set with its volume mode, and CDI defaults unspecified DataVolume fields *from the first matching set*. The derived flags (`supportsRWX`, `supportsBlock`, …) are the same information pre-scanned, and `rwxVolumeMode` names the volume mode that comes with ReadWriteMany on this class — `Block` on RBD-backed classes, `Filesystem` on file-backed ones.
+
+**`cloneStrategy`** decides how a clone of an existing volume — every VM created from a golden image — is executed:
+
+| Strategy | Mechanism | Constraint | Speed |
+| --- | --- | --- | --- |
+| `csi-clone` | The CSI driver clones natively | Same volume mode **and** same class as the source | Seconds |
+| `snapshot` | Snapshot the source, restore as the target | Same mode + class, and a VolumeSnapshotClass must exist | Fast |
+| `copy` | Two helper pods byte-copy through a pipe | None — the universal fallback | A minute or more per 10 Gi |
+
+The constraint column is the trap: both fast strategies refuse a **cross-volume-mode** pair. A Filesystem-mode source cloned to a Block-mode target silently falls through to `copy` no matter what the profile says.
+
+## Which class for VMs and images
+
+<Steps>
+  <Step title="Golden images: RWX + Block on an RBD class">
+    Import Image Library goldens as ReadWriteMany on a class like `ceph-block` — the profile above shows RWX arrives as Block mode. A Block golden cloned to a Block VM disk takes the `csi-clone` path: seconds instead of the minute-plus host copy, roughly a 20× difference in practice.
+  </Step>
+  <Step title="Live-migratable VMs: RWX disks">
+    Live migration requires the disk readable from two nodes at once — ReadWriteMany. On RBD that again means Block mode, which is exactly what a Block golden clones into. RWO pins the VM to its node.
+  </Step>
+  <Step title="Keep source and target modes aligned">
+    The fast clone path survives only while golden and disk share a volume mode and class. Cross-pool clones within one provisioner (e.g. `ceph-block` → `ceph-san-block`) stay on `csi-clone`, so goldens do not need per-class copies.
+  </Step>
+  <Step title="File-backed classes for file workloads">
+    NFS-style classes support RWX in Filesystem mode — fine for shared data, but VM disks on them clone via `copy` and profiles without Block support cannot back Block claims at all.
+  </Step>
+</Steps>
+
+[VM storage & disks](/vms/storage) covers the same decision from the VM side — how the class choice surfaces as migratability and clone time.
+
+<Note>
+  An empty profiles list means CDI is not installed on this supervisor — profiles are CDI's view of the classes, so the Virtualization step has to come first.
+</Note>
+
+## The test-PVC diagnostic
+
+The profile says what CDI *believes* the class supports; the **test PVC** asks the CSI driver directly. It creates a raw claim — deliberately bypassing CDI and its profile defaulting — with the class, access mode, volume mode, and size you pick, waits up to 30 seconds for it to bind, reports what actually landed, and deletes it.
+
+Two readings:
+
+- **The raw claim binds** with the requested modes → the driver is fine. If a VM disk on the same class still lands downgraded (RWX requested, RWO bound), the change happened *above* the CSI layer — profile defaulting is overriding intent, and the profile's `claimPropertySets` is where to look.
+- **The raw claim stays Pending** → the driver, class parameters, or backend genuinely cannot satisfy the combination; the response carries the claim's events with the provisioner's own reason.
+
+## Permissions
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| List classes and profiles | `storage:GetStatus` | `krn:vks:supervisor:<supervisor>:storage:*` |
+| Run a test PVC | `storage:Test` | `krn:vks:supervisor:<supervisor>:storage:*` |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="VM storage & disks" icon="hard-drive" href="/vms/storage">
+    The consumer side — what the class choice does to a VM.
+  </Card>
+
+  <Card title="PVCs & snapshots" icon="box-archive" href="/storage/pvcs-and-snapshots">
+    The claims these classes actually hold, and the Pending checklist.
+  </Card>
+
+  <Card title="Rook-Ceph" icon="database" href="/storage/rook-ceph">
+    Where `ceph-block` and `ceph-san-block` come from.
+  </Card>
+
+  <Card title="NFS & Fibre Channel" icon="plug" href="/storage/nfs-and-fibre-channel">
+    The file-backed and array-backed classes.
+  </Card>
+</CardGroup>

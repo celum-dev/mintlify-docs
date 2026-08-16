@@ -79,6 +79,17 @@
             ]
           },
           {
+            "group": "Storage",
+            "icon": "hard-drive",
+            "pages": [
+              "storage/overview",
+              "storage/rook-ceph",
+              "storage/nfs-and-fibre-channel",
+              "storage/classes-and-profiles",
+              "storage/pvcs-and-snapshots"
+            ]
+          },
+          {
             "group": "Reference",
             "icon": "book",
             "pages": [
