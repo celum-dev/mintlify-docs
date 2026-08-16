@@ -6,7 +6,7 @@ icon: "server"
 
 The **Infrastructure** view is the hardware truth of a supervisor: every node with its capacity, live utilization, disk inventory, network interfaces, and — on bare metal — a power profile control. It merges several data sources into one board, and reports which of them are contributing (Kubernetes node objects, the machine-inventory disk data, the cluster agent, and Prometheus), so a partially degraded view tells you which source dropped out rather than silently showing less.
 
-![The Infrastructure board — SAN LUNs with multipath state, node capacity and live load](/images/platform-health/infrastructure-board.png)
+![The Infrastructure board — SAN LUNs with multipath state on a storage supervisor, and the GPU inventory (PCI-discovered NVIDIA devices, driver and schedulability) on a GPU supervisor](/images/platform-health/infrastructure-board.png)
 
 ## The cluster rollup
 
