@@ -6,6 +6,8 @@ icon: "globe"
 
 The **Gateways & Routes** tab manages the north-south path: Gateway API objects, their listeners and certificates, and the routes that publish workloads through them. Which controller serves them — Envoy Gateway or Cilium Gateway API — is shown by the north-south engine pill in the page header. If the pill flags a **conflict**, both stacks' CRDs are installed at once; resolve that before creating gateways, or two controllers will fight over the same objects.
 
+![The Gateways & Routes tab — gateways with class chips, listeners, and the unified routes table](/images/networking/gateways-routes.png)
+
 ## The shared gateway pattern
 
 Celum's ingress model is built on **one Gateway, many namespaces**. A shared Gateway holds a single LoadBalancer address; every listener on it allows routes from all namespaces, so an HTTPRoute anywhere in the cluster can attach to it cross-namespace. cert-manager's Gateway API integration issues TLS certificates straight from the Gateway's annotations.
