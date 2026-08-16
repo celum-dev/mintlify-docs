@@ -8,6 +8,8 @@ Rook-Ceph is the supervisor's distributed storage: the wizard's **Rook-Ceph** ta
 
 Chart versions are **pinned**, never floating — the version dropdown offers newer releases, but moving off the pinned default is a deliberate click, not something a repository update can do to you. Operator and cluster charts must stay in lockstep.
 
+![The Storage wizard step — Rook-Ceph device selection with SAN LUNs, capacity estimate, topology, networks and pools](/images/storage/rook-ceph-step.png)
+
 ## The disk inventory
 
 The install starts from the per-node disk inventory: every block device on every node with model, size, transport, and a lifecycle **state** that decides whether it can become an OSD:
