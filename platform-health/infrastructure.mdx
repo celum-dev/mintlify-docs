@@ -1,0 +1,112 @@
+---
+title: "Infrastructure & nodes"
+description: "The per-supervisor node board — capacity, live utilization, disks, NICs, Fibre Channel, GPUs — plus per-node detail, the resource browser, and power profiles on bare metal."
+icon: "server"
+---
+
+The **Infrastructure** view is the hardware truth of a supervisor: every node with its capacity, live utilization, disk inventory, network interfaces, and — on bare metal — a power profile control. It merges several data sources into one board, and reports which of them are contributing (Kubernetes node objects, the machine-inventory disk data, the cluster agent, and Prometheus), so a partially degraded view tells you which source dropped out rather than silently showing less.
+
+## The cluster rollup
+
+The board opens with the cluster totals:
+
+| Metric | Example |
+| --- | --- |
+| Nodes | 3 total, 3 ready |
+| CPU | 96 cores, ~37% average utilization |
+| Memory | ~370 GiB total, ~44% average utilization |
+| Storage | ~20.7 TiB across all node disks |
+| Load | cluster-wide 1-minute load average |
+
+## Node rows
+
+One row per node — readiness, schedulability, and live utilization side by side:
+
+| Node | Role | Ready | CPU | Memory | Load (1m) |
+| --- | --- | --- | --- | --- | --- |
+| `node-1` | control-plane | yes | 32 cores · 70% | 123 GiB · 41% | 45.9 |
+| `node-2` | control-plane | yes | 32 cores · 5% | 123 GiB · 23% | 1.1 |
+| `node-3` | control-plane | yes | 32 cores · 35% | 123 GiB · 67% | 17.0 |
+
+Each node also carries its identity block: internal IP, OS and kernel (e.g. `Talos (v1.12.6)` / `6.18.18-talos`), kubelet version, container runtime, architecture, and uptime. A node that is **not ready** or **cordoned** (unschedulable) is flagged on its row — those two signals are the board's node-condition summary.
+
+<Note>
+  Version skew is easiest to catch here: kubelet, OS, and kernel versions sit next to each other for every node, so one node lagging after a rolling upgrade stands out immediately.
+</Note>
+
+## Per-node detail
+
+Expanding a node (or opening its detail view) shows the full hardware inventory.
+
+### Disks
+
+Every block device with model, size, transport, and a **system disk** marker:
+
+| Device | Model | Size | Transport | System |
+| --- | --- | --- | --- | --- |
+| `/dev/nvme1n1` | M.2 PCIe SSD | 512 GB | `nvme` | yes |
+| `/dev/nvme0n1` | NVMe SSD | 4 TB | `nvme` | no |
+| `/dev/sdb`–`/dev/sde` | SAN LUN | 1 TiB each | `fc` | no |
+
+The transport field distinguishes local NVMe from Fibre Channel LUNs and removable media — useful when picking devices for storage clusters, since the system disk and removable devices must stay out.
+
+### NICs
+
+Per-interface state with live traffic rates: name, MTU, VLAN tag for subinterfaces, addresses, link state, and current receive/transmit throughput. A typical bare-metal node shows a high-MTU bond (e.g. `bond0`, MTU 9000) with VLAN subinterfaces carrying the management, storage, and workload networks — the rates make it obvious which VLAN the traffic actually rides.
+
+### Fibre Channel
+
+Nodes with FC HBAs list each port: WWPN, port state (`Online`), speed (e.g. `16 Gbit`), and port type. Two online ports per node is the healthy dual-path picture; a port stuck offline explains multipath degradation before you go looking at the SAN.
+
+### GPUs
+
+GPU inventory is discovered from the PCI bus by the cluster agent, so accelerators show up even before any driver or exporter is installed. For utilization metrics on top of inventory, install the [NVIDIA DCGM exporter](/platform-health/monitoring#opt-in-exporters).
+
+## Power profiles
+
+Bare-metal supervisors expose a cluster-wide CPU **power profile**: `eco`, `balanced`, or `performance`.
+
+- The control appears only when the supervisor is **tunable**: the nodes are bare metal (detected from the node provider ID) *and* the power-tuning agent is deployed. VM-based supervisors hide the card — their CPU policy belongs to the hypervisor.
+- The status lists each node with its detected platform, so a mixed cluster shows exactly which nodes the profile can affect.
+- Setting a profile updates a single cluster-wide setting; the agent reconciles every node within about 30 seconds.
+
+<Warning>
+  `eco` trades peak clock for power draw cluster-wide. Check current CPU utilization on the board before dialing down a busy cluster.
+</Warning>
+
+## Namespaces and the resource browser
+
+Two adjacent supervisor views round out the picture:
+
+- **Namespaces** — the flat list of namespaces on the supervisor, the quickest way to see which platform components and projects are present.
+- **Resource browser** — live workloads with status, readiness, age, restart count, pod IP, and the node each pod runs on. Restart counts here are the bridge between the hardware board and workload health: a node with elevated restarts across many pods is a node problem, not an application problem.
+
+## Permissions
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| Read the infrastructure board and per-node detail | `supervisor:GetSummary` | `krn:vks:supervisor:<supervisor>` |
+| Read the power profile | `supervisor:GetSummary` | `krn:vks:supervisor:<supervisor>` |
+| Set the power profile | `supervisor:SetPowerProfile` | `krn:vks:supervisor:<supervisor>` |
+| Browse supervisor resources | `supervisor:GetResources` | `krn:vks:supervisor:<supervisor>` |
+| List namespaces | `discovery:ListNamespaces` | `krn:vks:supervisor:<supervisor>:discovery:*` |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Platform health overview" icon="heart-pulse" href="/platform-health/overview">
+    The component-status model that complements the hardware view.
+  </Card>
+
+  <Card title="Monitoring" icon="chart-line" href="/platform-health/monitoring">
+    The exporters that turn this inventory into time series.
+  </Card>
+
+  <Card title="Supervisors & clusters" icon="layer-group" href="/concepts/supervisors-and-clusters">
+    What a supervisor is and how nodes relate to tenant clusters.
+  </Card>
+
+  <Card title="Networking overview" icon="network-wired" href="/networking/overview">
+    The network fabric behind the NICs and VLANs on this page.
+  </Card>
+</CardGroup>

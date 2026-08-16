@@ -1,0 +1,91 @@
+---
+title: "Logs"
+description: "Loki and the Alloy collectors — the two components behind platform logs, release state vs runtime state, the tenant log read layer, and the failure modes that keep a green release from shipping logs."
+icon: "file-lines"
+---
+
+Platform logging is two components, both in the `monitoring` namespace:
+
+| Component | Role | Example version |
+| --- | --- | --- |
+| **Loki** | Log store and query API — retention-bounded, backed by a PVC | chart `17.4.6` |
+| **Alloy** | Per-node collector DaemonSet — tails pod logs and pushes them to Loki | chart `1.10.0` |
+
+Loki without Alloy stores nothing; Alloy without Loki has nowhere to push. The wizard installs them as separate steps so each has its own release state.
+
+## Configuration that matters
+
+The status reports the desired configuration each release runs with:
+
+- **Loki** — storage class and size (e.g. `ceph-block`, `50Gi`) and the retention period (e.g. `168h`). Retention is the trade-off dial: longer history, more PVC.
+- **Alloy** — the Loki endpoint it pushes to (the in-cluster service, `http://loki.monitoring.svc.cluster.local:3100`) and the **excluded namespaces** whose logs are not collected (e.g. `flux-system`, `cilium-secrets`, `tetragon-system`) — high-churn system namespaces that would otherwise dominate the store.
+
+## hr-status vs status
+
+Both components expose two reads, and the distinction is the useful part:
+
+| Endpoint | Returns | Use it for |
+| --- | --- | --- |
+| `hr-status` | The HelmRelease block only — exists, ready, revision, conditions | Fast release-state polling: did the chart deploy? |
+| `status` | Everything in `hr-status`, plus installed flag, namespace, and the desired configuration | The full panel view: what is deployed and how it is configured |
+
+The split mirrors the [three-layer triage](/platform-health/overview#release-state-is-not-the-whole-story): `hr-status` answers "did the chart land", `status` answers "what is it configured to do" — and neither proves logs are actually arriving. For that, query a pod's logs and check the source (below).
+
+## The tenant log read layer
+
+Pod logs in the resource browser — for the supervisor and for guest clusters — are served **Loki-first with live fallback**:
+
+<Steps>
+  <Step title="Loki first">
+    The backend queries the supervisor's Loki over the internal service path with a selector on cluster, namespace, and pod — returning up to 72 hours of history, including logs from pods that have since restarted or been rescheduled.
+  </Step>
+  <Step title="Live fallback">
+    When Loki has nothing for the pod — shipping is off, or ingestion has not caught up — the request falls back to the live kubelet log read. You never get less than the plain Kubernetes path would give you.
+  </Step>
+  <Step title="Source badge">
+    The logs view labels each transcript with its source (`Loki · history` or `live`), so a silent fallback is visible. A pod that should have history but shows `live` is your cue to check the shipping path.
+  </Step>
+</Steps>
+
+Guest clusters ship their logs with their own Alloy collectors pushing to the supervisor's Loki. That path requires Loki to be **published on the shared Gateway** — guests are separate clusters and can only reach it via a routable hostname. Celum exposes the route automatically when Loki is installed; see [Gateways & Routes](/networking/gateways-and-routes).
+
+## What commonly breaks
+
+<Warning>
+  The collector DaemonSet needs **privileged** access — it mounts host log paths on every node. If the namespace it runs in enforces a restrictive Pod Security level, the DaemonSet schedules **zero pods** while the HelmRelease still reports `Ready` — the chart deployed fine; the workloads were rejected at admission. A green release with no recent logs: check the collector's pod count first, then the namespace's Pod Security labels.
+</Warning>
+
+Other recurring failure modes, in triage order:
+
+1. **Alloy not installed** — logs views quietly serve `live` only. The status panel shows the release absent.
+2. **Collector pods down** — the Pod Security case above, or a node-level issue; either way the release is green and the DaemonSet is not.
+3. **Guest push path broken** — the guest's collectors are healthy but the Loki route is missing or unreachable from the guest network; supervisor logs work, guest history does not.
+4. **Retention expired** — history exists but is shorter than expected; check the configured retention period before suspecting ingestion.
+
+## Permissions
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| Read Loki / Alloy status and hr-status | `monitoring:GetStatus` | `krn:vks:supervisor:<supervisor>:monitoring:*` |
+| Install or recover Loki / Alloy | `monitoring:Install` | `krn:vks:supervisor:<supervisor>:monitoring:*` |
+| Read pod logs in the resource browser | `cluster:GetWorkloads` | `krn:vks:supervisor:<supervisor>:cluster:<cluster>` |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Platform health overview" icon="heart-pulse" href="/platform-health/overview">
+    Release state vs runtime state — the model this page applies.
+  </Card>
+
+  <Card title="Monitoring" icon="chart-line" href="/platform-health/monitoring">
+    The metrics half of the observability stack, same namespace.
+  </Card>
+
+  <Card title="Flow telemetry" icon="wave-square" href="/platform-health/flow-telemetry">
+    Network flow data — a separate pipeline with its own freshness signal.
+  </Card>
+
+  <Card title="Gateways & Routes" icon="globe" href="/networking/gateways-and-routes">
+    The shared Gateway that guest log shipping depends on.
+  </Card>
+</CardGroup>

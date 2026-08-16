@@ -68,6 +68,17 @@
             ]
           },
           {
+            "group": "Platform Health",
+            "icon": "heart-pulse",
+            "pages": [
+              "platform-health/overview",
+              "platform-health/monitoring",
+              "platform-health/logs",
+              "platform-health/flow-telemetry",
+              "platform-health/infrastructure"
+            ]
+          },
+          {
             "group": "Reference",
             "icon": "book",
             "pages": [
