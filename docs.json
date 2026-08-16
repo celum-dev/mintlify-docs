@@ -75,6 +75,18 @@
             ]
           },
           {
+            "group": "Security",
+            "icon": "shield-halved",
+            "pages": [
+              "security/overview",
+              "security/topology",
+              "security/flow-analytics",
+              "security/forensics",
+              "security/policies",
+              "security/pipeline-and-runtime"
+            ]
+          },
+          {
             "group": "Platform Health",
             "icon": "heart-pulse",
             "pages": [

@@ -23,3 +23,4 @@ The UI route and platform version enable drift-driven retakes.
 | clusters/cluster-detail.png | clusters/overview | /s/{supervisor}/clusters/{cluster}?namespace={ns} (full page) | v1.47.0 | 2026-08-16 |
 | clusters/cluster-detail-helm.png | clusters/day-2-operations | /s/{supervisor}/clusters/{cluster}?namespace={ns} (full page, Helm Releases expanded) | v1.47.0 | 2026-08-16 |
 | clusters/create-capi-form.png | clusters/create | /s/{supervisor}/clusters/create-capi (full page, talos-kubevirt class selected) | v1.47.0 | 2026-08-16 |
+| security/topology.png | security/topology | /s/{supervisor}/security?tab=topology (full page; SVG label text blurred in place) | v1.47.0 | 2026-08-16 |

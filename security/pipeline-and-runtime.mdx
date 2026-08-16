@@ -1,0 +1,163 @@
+---
+title: "Pipeline & runtime"
+description: "Standing up flow collection on a supervisor, extending it to guest clusters and vclusters, running Tetragon, managing platform secrets, and the force-cleanup escape hatches — including exactly what each one destroys."
+icon: "radio"
+---
+
+Everything in the Security area is a query over one database, and this page is about the machinery that fills it. It lives on the **Flow Collector** tab, and every operation here is gated on `supervisor:Onboard` — the same action that gates the rest of platform onboarding.
+
+The read-only health model for this pipeline — components, schema versioning, ingestion counters — is documented in [Flow telemetry](/platform-health/flow-telemetry). This page is the operator's side: what to click, in what order, and what breaks if you skip a step.
+
+## Standing it up
+
+<Steps>
+  <Step title="Install the store">
+    `POST .../security/onboard` installs the ClickHouse operator and creates the ClickHouseInstallation in the `security` namespace. It streams progress as server-sent events, so the wizard shows each step as it happens rather than a spinner.
+  </Step>
+  <Step title="Check the components">
+    `GET .../security/status` returns the two pieces and their state:
+
+    ```json
+    [
+      { "name": "clickhouse-operator", "installed": true, "ready": true },
+      { "name": "clickhouse-instance", "installed": true, "ready": true }
+    ]
+    ```
+  </Step>
+  <Step title="Enable collection">
+    `POST .../security/flows/enable` is the step that turns a database into a pipeline. It refuses to run before the previous two succeed — a missing installation returns **412** with a message telling you to onboard first, and so does an installation that is neither `Completed` nor `InProgress`.
+  </Step>
+  <Step title="Confirm rows are arriving">
+    `GET .../security/flows/status` — `rowsLastMinute` climbing is the only proof that matters. See [no data or no traffic](/security/overview#no-data-or-no-traffic).
+  </Step>
+</Steps>
+
+### What enabling actually does
+
+The enable call is idempotent and does considerably more than flip a flag, which is why re-running it is the standard repair for a half-configured pipeline:
+
+- publishes the ClickHouse write endpoint as a NodePort Service, because in-cluster service DNS does not resolve from the collectors that write from outside the pod network;
+- ensures the admin and writer credentials as Secrets, and patches the installation so the operator writes the admin user into its own config;
+- runs the schema migrations, then creates the writer user and its grants;
+- mirrors the Hubble client certificates into the `security` namespace for collectors that need mTLS to Hubble;
+- reconciles the flow-collector workload;
+- installs the flow observability overlay — ServiceMonitors, a PrometheusRule and a Grafana dashboard, so the pipeline itself is monitored like anything else;
+- applies the **cluster-wide DNS visibility policy**. Without it Cilium's DNS proxy stays transparent and never emits lookups, so external peers show as bare `ext/<ip>` forever while every other layer looks perfectly healthy.
+
+The response reports per-stage warnings (`daemonsetWarnings`, `observabilityWarnings`, `dnsVisibilityWarnings`) and a `dnsVisibilityApplied` flag. Warnings are not failures — the pipeline runs without the observability overlay — but an unresolved `dnsVisibilityWarnings` is the direct cause of nameless egress in [FQDN egress](/security/flow-analytics#fqdn-egress).
+
+### Trace reasons
+
+The enable call accepts an optional body that controls how much conntrack detail is recorded:
+
+```json
+{ "traceReasons": ["NEW", "REPLY"] }
+```
+
+`NEW, REPLY` is the default and the right answer for almost everyone: connections are counted at setup and reply rather than continuously. The full choice set — `NEW`, `REPLY`, `ESTABLISHED`, `RELATED`, `SRV6_ENCAP`, `SRV6_DECAP`, `ENCRYPT_OVERLAY` — is returned by `flows/status` as `traceReasonsChoices`, and passing `["*"]` disables the filter entirely. Adding `ESTABLISHED` on a busy supervisor multiplies row volume substantially; do it deliberately and for a bounded period.
+
+<Note>
+  `flows/status` also reports `flowCollectorDesired` and `flowCollectorReady`. On supervisors where collection runs per node inside the cluster agent, these read `0` and `false` while rows keep arriving at full rate — the collector Deployment simply is not the thing doing the work there. Judge ingestion by `rowsLastMinute` and freshness, never by that pair.
+</Note>
+
+### Schema migrations on their own
+
+`POST .../security/flows/migrate` runs the schema migrations without the rest of the enable path. Use it after a schema chart upgrade, when tables are present but a newer view or column is missing.
+
+### ClickHouse instances
+
+The instance CRUD endpoints — `GET`/`POST .../security/instances` and `GET`/`PUT`/`DELETE .../security/instances/{instance}` — list and manage the ClickHouseInstallation objects in the `security` namespace. The standard deployment is a single flows instance created by onboarding; these exist for inspecting it and for the rare case of running more than one.
+
+## Guest clusters and vclusters
+
+Guest clusters do not get their own database. Their collectors write into the *supervisor's* ClickHouse over the same NodePort write endpoint, tagging every row with the guest's cluster name — which is why the flows-source selector on each Security tab (`?cluster=`) can switch you into a tenant's traffic without leaving the supervisor.
+
+Collection for a guest is enabled through the cluster's own configuration rather than from this tab: new clusters get it by default, existing ones are opted in per cluster. Two consequences are worth knowing before you debug a silent guest:
+
+- Byte accounting depends on a Cilium setting that only takes effect after the agent restarts. The signature is flow rows arriving normally while byte-carrying tables stay at zero.
+- The supervisor's write endpoint has to be reachable from the guest. When it is not, the guest's collectors log connection refused and nothing at all appears for that cluster — which [freshness](/security/overview#no-data-or-no-traffic) shows as one entry going stale while every other cluster stays current.
+
+**vclusters need a different treatment entirely.** A vcluster has no CNI of its own: the syncer pushes its pods onto the host as ordinary pods in a host namespace, so the namespace the tenant believes it is in does not exist on the supervisor, and filtering by namespace finds nothing. What does exist is a label pair the syncer stamps on every synced pod — one naming the vcluster, one naming the namespace the guest sees. `GET .../security/vclusters` enumerates those virtual namespaces, discovered from both the flow store (what is talking) and the pod API (what exists but is idle), and the Security scope pickers use them to scope views correctly.
+
+<Warning>
+  The same host namespace can hold a native workload and a vcluster-synced one with **byte-identical labels**. Only the two vcluster labels tell them apart. A policy written for the tenant without those labels silently covers the native twin as well. Use the vcluster scope in the authoring surface rather than hand-writing the selector, and see [Topology](/security/topology#narrowing-the-graph) for the `origin` filter that separates the two worlds on the graph.
+</Warning>
+
+## Tetragon
+
+Tetragon is the optional runtime-security layer: eBPF probes that produce process-level events and real byte counters alongside the network flows. It installs into its own `tetragon` namespace so its lifecycle is independent of the ClickHouse stack — you can add or remove it without touching flow collection.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST .../security/tetragon/install` | Installs the agent and applies the requested tracing policies. Fast enough to return a single JSON result rather than a stream |
+| `GET .../security/tetragon/status` | `installed`, `ready`, version, namespace, release, the gRPC service address, `availablePolicies`, `policiesApplied`, and DaemonSet `dsDesired`/`dsReady` |
+| `POST .../security/tetragon/policies` | Toggle tracing policies without reinstalling — body `{ "policies": ["tcp-flows", "process-exec"] }` |
+| `POST .../security/tetragon/uninstall` | Removes it |
+
+Four starter tracing policies ship with the platform: `tcp-flows`, `tcp-accept`, `process-exec` and `tls-sni`. They are labelled as platform-managed, so reconciliation removes drift among *those* without ever touching TracingPolicies you created yourself.
+
+Two operational notes. Readiness is the **DaemonSet** count, not the presence of a release — the eBPF programs live in the agent pods, so `installed: true` with `dsReady: 0` means nothing is being observed. And the collectors pick Tetragon up automatically: once the agent's gRPC Service exists, re-running enable wires the subscription without further configuration.
+
+## Platform secrets
+
+The **Secrets** tab appears only where External Secrets Operator is installed. `GET .../security/secrets` returns the store configuration together with every platform-managed secret and its sync state:
+
+```json
+{
+  "configured": true, "storeName": "platform-store", "storeReady": true, "kvMount": "celum",
+  "secrets": [
+    {
+      "namespace": "proj-demo", "name": "app-credentials",
+      "keys": ["username", "password"],
+      "storeRef": "platform-store", "refreshInterval": "1m",
+      "lastSync": "2026-08-15T23:07:07Z", "ready": true,
+      "platformManaged": true, "age": "120h11m51s"
+    }
+  ],
+  "total": 2, "synced": 2, "failing": 0, "namespaces": 2
+}
+```
+
+Secret *values* are never returned — only names, key names and sync state. `POST .../security/secrets` creates one, and unlike the rest of this page it requires `supervisor:Manage` rather than `supervisor:Onboard`. When `storeReady` is false, every secret reads as failing with the store's own error in `storeMessage`; fix the store before investigating individual secrets.
+
+## Tearing it down
+
+`POST .../security/uninstall` removes the stack in the order that actually works: the collector workload and the platform-owned Services and Secrets first, then the ClickHouseInstallation with foreground propagation so the operator cleans up its own dependants, waiting for it to disappear — and only then the operator release itself. Removing the operator first would leave a finalizer nobody can process.
+
+### Force-cleanup escape hatches
+
+Two endpoints exist for when that ordering has already been broken. Both are destructive and neither is part of normal operation.
+
+<Warning>
+  **`POST .../security/chi/force-cleanup`** strips the finalizer from the flows installation and force-deletes it. The finalizer was the operator's opportunity to clean up, so **the pod, Service and PVC are left behind** — and the PVC holds the flow data. The endpoint reaps those leftovers by label only when the operator namespace is already empty; otherwise you delete them by hand. Use this only when the operator was removed before the installation finished terminating.
+</Warning>
+
+<Warning>
+  **`POST .../security/namespace/force-cleanup`** clears the finalizers on the ClickHouse operator namespace so a namespace stuck in `Terminating` can complete. Everything still inside that namespace goes with it, and any controller that expected to run cleanup on the way out never gets the chance. Reach for it only when the namespace is genuinely wedged.
+</Warning>
+
+Both return `already-gone` when there is nothing to clean, so a mistaken call against a healthy supervisor is a no-op rather than damage.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Flow telemetry" icon="wave-square" href="/platform-health/flow-telemetry">
+    Component health, schema versioning and the ingestion triage order.
+  </Card>
+
+  <Card title="Security overview" icon="shield-halved" href="/security/overview">
+    What the pipeline feeds, and how to tell no data from no traffic.
+  </Card>
+
+  <Card title="Day-2 operations" icon="screwdriver-wrench" href="/clusters/day-2-operations">
+    Where guest-cluster settings, including telemetry, are changed.
+  </Card>
+
+  <Card title="Networking overview" icon="network-wired" href="/networking/overview">
+    The Cilium datapath these collectors observe.
+  </Card>
+</CardGroup>
+
+<Note>
+  Celum AI reads the same surfaces: `get_component_status` for whether the pipeline components are installed and ready, `get_flow_freshness` for whether ingestion is actually alive, and `list_platform_secrets` for the secrets view and its sync state.
+</Note>

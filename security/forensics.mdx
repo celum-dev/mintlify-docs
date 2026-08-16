@@ -1,0 +1,178 @@
+---
+title: "Forensics"
+description: "Ingress and egress drill-down — who is reaching a service and where a workload phones home — including the arguments each view requires and how to replay a past incident with since and offset."
+icon: "magnifying-glass-chart"
+---
+
+Forensics is where an investigation narrows from a graph to a single client IP or a single workload. Two tabs, symmetric in shape: **Ingress Forensics** works inbound from the client, **Egress Forensics** works outbound from the workload. Both are read-only queries under `supervisor:GetSummary`, and both understand `since` plus `offset`, which is what lets you replay an incident rather than only watch the present.
+
+## The window is the tool
+
+`since` sets the length of the window; `offset` shifts it into the past. `since=1h` is the last hour; `since=1h&offset=2h` is the hour that ended two hours ago. The forensics tabs expose this as a 24-hour scrubber you can drag and resize, and the same values live in the URL (`?since=&offset=`) so a link carries the exact frame you were looking at.
+
+When you know roughly when something happened, set `since` to the incident's duration and walk `offset` backwards a window at a time. The counts snap into place the moment you cover it.
+
+## Required arguments
+
+Some views are deliberately un-callable without a subject, because an unscoped answer would be meaningless. They return **400** rather than an empty list:
+
+| View | Required | Optional narrowing |
+| --- | --- | --- |
+| `ingress-forensics/clients` | — | `ns`, `wl`, `limit` |
+| `ingress-forensics/client` | `ip` | `limit` |
+| `ingress-forensics/endpoints` | `ip` | `limit` |
+| `ingress-forensics/timeline` | — | `ns`, `wl` |
+| `ingress-forensics/sankey` | — | `ns`, `wl`, `ip`, `limit` |
+| `ingress-forensics/vm` | — | `ns`, `limit` |
+| `egress-forensics/workloads` | — | `ns`, `limit` |
+| `egress-forensics/destinations` | `ns` **and** `wl` | `limit` |
+| `egress-forensics/groups` | `ns` **and** `wl` | `limit` |
+| `egress-forensics/sankey` | `ns` **and** `wl` | `limit` |
+| `egress-forensics/timeline` | — | `ns`, `wl` |
+
+Every view additionally takes `since`, `offset` and `cluster`.
+
+## Ingress: who is reaching this
+
+`GET .../security/flows/ingress-forensics/clients` ranks the clients that reached the supervisor's L7 ingress in the window, and resolves each one to an identity where it can:
+
+```json
+[
+  {
+    "clientIp": "10.42.0.67", "requests": 5781,
+    "uniquePaths": 2, "uniqueHosts": 1, "uniqueBackends": 1,
+    "httpErrorCount": 0, "denied": 0,
+    "sampleUrl": "https://logs.example.com/loki/api/v1/push",
+    "topBackend": "/", "identity": "vm-guest/proj-demo/worker-0",
+    "firstSeen": "2026-08-16T15:26:38Z", "lastSeen": "2026-08-16T16:26:28Z"
+  },
+  {
+    "clientIp": "203.0.113.42", "requests": 240,
+    "uniquePaths": 2, "uniqueHosts": 1, "uniqueBackends": 2,
+    "httpErrorCount": 0, "denied": 0,
+    "topBackend": "security/", "identity": "ext/203.0.113.42",
+    "firstSeen": "2026-08-16T16:22:25Z", "lastSeen": "2026-08-16T16:26:21Z"
+  }
+]
+```
+
+Two fields carry most of the value. `identity` turns a bare address into something you can act on — a guest cluster node, a standalone VM, or `ext/…` for a genuinely external client. `denied` is merged in from the L4 layer, because a client blocked by a network policy never reaches the proxy and would otherwise be invisible here: a row with many `denied` and few `requests` is somebody knocking on a closed door.
+
+Pick a client and `ingress-forensics/endpoints?ip=…` shows exactly what it touched:
+
+```json
+[
+  {
+    "method": "POST", "host": "metrics.example.com", "hostSource": "http",
+    "path": "/api/v1/write", "port": 443, "protocol": "TCP",
+    "requests": 3240, "errors": 0,
+    "sampleUrl": "https://metrics.example.com/api/v1/write",
+    "sampleForwardedFor": "10.42.0.67",
+    "firstSeen": "2026-08-16T15:26:20Z", "lastSeen": "2026-08-16T16:26:18Z"
+  }
+]
+```
+
+`ingress-forensics/timeline` gives the shape over time — one bucket per minute with requests, errors and distinct clients:
+
+```json
+[
+  { "bucket": "2026-08-16T15:26:00Z", "requests": 65,  "errors": 0, "clients": 3 },
+  { "bucket": "2026-08-16T15:27:00Z", "requests": 219, "errors": 0, "clients": 3 }
+]
+```
+
+and `ingress-forensics/sankey` renders the client-to-backend fan-out for the same scope.
+
+### Worked example — who is hammering this service
+
+<Steps>
+  <Step title="Scope to the service">
+    Open **Ingress Forensics** and set `ns` and `wl` to the workload under load. The client table is now only clients that reached it.
+  </Step>
+  <Step title="Find the shape of the spike">
+    Read the timeline. A flat line at a high rate is a misconfigured client; a step change points at a deploy; a sawtooth is a retry loop.
+  </Step>
+  <Step title="Rank the clients">
+    Sort by `requests`. If one `clientIp` dominates, its `identity` usually names the culprit outright. If `denied` dominates instead, the traffic is being blocked and the client is retrying — that is a policy question, not a capacity one.
+  </Step>
+  <Step title="Confirm what it asked for">
+    Drill in with the client's IP. `uniquePaths` and the endpoint rows show whether it hits one hot path or sprays; `errors` separates "successfully hammering" from "failing and retrying".
+  </Step>
+  <Step title="Replay to find the start">
+    Walk `offset` backwards until the client disappears from the table. That boundary is when the behaviour began.
+  </Step>
+</Steps>
+
+### Direct-to-VM ingress
+
+L7 forensics can only see traffic that passed through the ingress proxy. A VM exposed by a LoadBalancer Service is reached directly, so there are no HTTP paths, status codes, latencies or real client IPs for it — nothing is on the wire to record them.
+
+`ingress-forensics/vm` covers that gap at L4: per (client, VM, port, protocol) it reports flows, denials and the connection outcome, with client identities resolved through IPAM. When you need the full L7 picture for a VM, `POST .../security/flows/ingress-forensics/vm/promote` wires it onto the shared Gateway — it creates a ClusterIP Service `<vm>-gw` selecting the VM on the requested port and attaches a hostname listener with TLS termination and a certificate, so from the next request the VM appears in the client table with complete L7 detail. The request body takes `namespace`, `vm`, `port`, `hostname` and an optional `clusterIssuer`; all but the issuer are required. This is the one write in the forensics area and it is gated on `vm:Expose`, not `supervisor:GetSummary`. See [VM networking](/vms/networking) for the exposure model it builds on.
+
+## Egress: where does this go
+
+`GET .../security/flows/egress-forensics/workloads` ranks workloads by outbound activity, with the forwarded/dropped split front and centre:
+
+```json
+[
+  {
+    "namespace": "rook-ceph", "workload": "rook-ceph-operator",
+    "requests": 128110, "forwarded": 128110, "dropped": 0,
+    "uniqueDestinations": 4, "uniqueParentDomains": 1
+  },
+  {
+    "namespace": "proj-demo", "workload": "worker-0",
+    "requests": 9919, "forwarded": 3837, "dropped": 5781,
+    "uniqueDestinations": 4, "uniqueParentDomains": 2
+  }
+]
+```
+
+A large `dropped` here is the single most actionable number in the Security area: the workload is trying to reach something it is not allowed to reach, repeatedly, and nothing in its own logs necessarily says so.
+
+With `ns` and `wl` you get the destinations:
+
+```json
+[
+  {
+    "method": "", "host": "", "path": "",
+    "port": 3300, "protocol": "TCP",
+    "requests": 109764, "forwarded": 109764, "dropped": 0,
+    "destIpSample": "203.0.113.130", "destIdentity": "node/node-1",
+    "firstSeen": "2026-08-16T15:26:38Z", "lastSeen": "2026-08-16T16:26:28Z"
+  }
+]
+```
+
+`method`, `host` and `path` are populated only for destinations seen at L7; a plain TCP destination leaves them empty and identifies itself through `destIdentity` and `destIpSample` instead. `egress-forensics/groups` rolls the same data up by parent domain, which turns a dozen subdomains into one line — and returns an empty list when a workload's egress is entirely L4, since there are no domains to roll up. `egress-forensics/timeline` and `egress-forensics/sankey` complete the set.
+
+Cluster-internal destinations are excluded from all egress views. The exclusion is computed from the live pod and service CIDRs of whichever context you selected — the supervisor's own ranges, or a guest cluster's `spec.clusterNetwork` when you scope with `cluster=` — so a guest with unusual CIDRs does not have its in-cluster traffic misreported as external.
+
+### Worked example — where does this workload phone home
+
+<Steps>
+  <Step title="Start from the ranking">
+    Open **Egress Forensics** without a workload selected. The table ranks every egressing workload; `uniqueParentDomains` separates "talks to one API" from "talks to the whole internet".
+  </Step>
+  <Step title="Select the workload">
+    Its destinations appear, ranked by requests, with `forwarded` and `dropped` per destination.
+  </Step>
+  <Step title="Group before you judge">
+    Switch to the parent-domain rollup. Fifty rows of CDN subdomains usually collapse into one vendor, and the outlier that remains is the interesting one.
+  </Step>
+  <Step title="Attribute the drops">
+    For any destination with `dropped` &gt; 0, the policy that did it is on the [Network policies](/security/policies) side: check coverage for the workload, then flow matches for the suspected policy.
+  </Step>
+  <Step title="Prove it is not new">
+    Shift `offset` back a day. A destination that is present in every window is a dependency; one that appears only recently deserves the attention.
+  </Step>
+</Steps>
+
+## When forensics is empty
+
+An empty forensics table has three ordinary causes, in order of likelihood: the window is wrong, the scope is wrong (`ns`/`wl` naming a workload that does not exist in that window), or the traffic never passed a point that could observe it — direct-to-VM ingress for the L7 views, cluster-internal destinations for the egress views. Only after those should you suspect ingestion; [freshness](/security/overview#no-data-or-no-traffic) settles that in one call.
+
+<Note>
+  Celum AI drives both sides through `get_forensics`, which takes a `view` argument for each of the eleven variants above and enforces the same required arguments. Pair it with `get_l7_events` for the individual requests behind a count, and `get_flow_denials` when the interesting number is what was blocked.
+</Note>
