@@ -6,6 +6,8 @@ icon: "heart-pulse"
 
 Every platform component Celum installs on a supervisor — the CNI, cert-manager, the monitoring stack, Loki, ClickHouse, CAPI, KubeVirt, storage operators, and the rest — is tracked the same way: a **status endpoint per component family** that reports whether the component is installed, whether it is ready, which version is running, and *why* if it is not. Learn the model once and every health panel in the product reads the same.
 
+![The onboarding wizard's Installation Summary — per-component install state for a supervisor](/images/platform-health/onboarding-wizard-status.png)
+
 ## The status model
 
 Components are installed as Flux **HelmReleases**. Each component's status endpoint returns a `helmRelease` block read straight from the release object on the supervisor:
