@@ -1,0 +1,163 @@
+---
+title: "App catalog"
+description: "Authoring reusable Helm app definitions — chart source, a Go-template values file rendered per cluster, render preview, chart validation, the enabled flag, and catalog import/export."
+icon: "box-open"
+---
+
+An **app definition** is a reusable blueprint for one piece of software: where its chart lives, which version to install, which namespace it belongs in, and a values file written as a Go template so the same definition produces cluster-appropriate values on every cluster. Definitions are stored in Celum's database, so they are supervisor-agnostic — the catalog is one list for the whole platform.
+
+`GET /api/apps` returns all of them; `GET /api/apps/enabled` returns only the ones offered during cluster creation.
+
+## What a definition holds
+
+```json
+[
+  { "id": "447bd7ac-d53d-4cba-bbe3-aac7b15e6faa",
+    "name": "argocd", "displayName": "ArgoCD",
+    "description": "GitOps continuous delivery tool for Kubernetes",
+    "helmRepoUrl": "https://argoproj.github.io/argo-helm",
+    "chartName": "argo-cd", "chartVersion": "7.8.26",
+    "targetNamespace": "argocd",
+    "isTanzuPackage": false, "sortOrder": 0, "enabled": true },
+
+  { "id": "fca8d01c-0f94-45bf-9b7c-cdce6152c723",
+    "name": "external-dns", "displayName": "External DNS",
+    "description": "Synchronizes exposed Kubernetes Services and Ingresses with DNS providers",
+    "helmRepoUrl": "https://kubernetes-sigs.github.io/external-dns",
+    "chartName": "external-dns", "chartVersion": "1.16.1",
+    "targetNamespace": "external-dns",
+    "isTanzuPackage": false, "sortOrder": 3, "enabled": true }
+]
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | The stable key. It is the filename in the GitOps repository and the name used to add or remove the app from a cluster — treat it as immutable once in use. |
+| `displayName`, `description` | What the picker shows. |
+| `helmRepoUrl`, `chartName`, `chartVersion` | The chart source. An `https://` repo is read through its `index.yaml`; an `oci://` URL is read through the OCI registry's tag list. An empty `chartVersion` means "whatever the source resolves to". |
+| `targetNamespace` | Where the release lands in the destination cluster. It is created on sync — the generated Application carries `CreateNamespace=true`. |
+| `valuesTemplate` | The per-cluster values file, as a Go template. See below. |
+| `isTanzuPackage` | Switches delivery from "Helm chart + values" to "commit these package files" — see [Tanzu packages](#tanzu-packages). |
+| `sortOrder` | Ordering in the picker. |
+| `enabled` | Whether the definition is offered at all. |
+| `packageFiles`, `extraResources` | Named YAML files committed alongside the app — package manifests and extra Kubernetes resources respectively. |
+
+## The values template
+
+`valuesTemplate` is plain Go `text/template`. The definition stays generic and the substitution makes it specific:
+
+```yaml
+global:
+  domain: argocd.{{.ClusterName}}.{{.Domain}}
+
+server:
+  ingress:
+    enabled: true
+    hostname: argocd.{{.ClusterName}}.{{.Domain}}
+```
+
+```yaml
+provider: godaddy
+
+domainFilters:
+  - {{.Domain}}
+
+policy: sync
+txtOwnerId: {{.ClusterName}}
+```
+
+The rendered result is committed to `clusters/<cluster>/apps/values/<app>.yaml` and referenced by the generated ArgoCD Application, so what the chart receives is a normal values file — no templating survives into the cluster.
+
+The fields available come from the cluster form: `ClusterName`, `Supervisor`, `Domain`, `StorageClass`, `Environment`, `Region`, `KubernetesVersion`, `ClusterNamespace`, `ArgocdNamespace`, and the rest of the creation payload.
+
+<Warning>
+  **Full substitution happens at cluster-creation time.** When you add an app to an *existing* cluster (`POST /api/gitlab/clusters/<cluster>/apps`), the values template is rendered with `ClusterName` only — every other field resolves empty. A template that depends on `{{.Domain}}` or `{{.StorageClass}}` will commit a values file with those lines blank. Keep templates for post-creation apps to `ClusterName`, or edit the committed values file afterwards.
+</Warning>
+
+## Preview and validate before you save
+
+Three endpoints let you check a definition without creating anything.
+
+<Steps>
+  <Step title="Render — see the values a cluster would get">
+    `POST /api/apps/render` takes `{ "template": "...", "formData": { ... } }` and returns `{ "rendered": "..." }`. A malformed template comes back as `400` with the parser's own message, so a typo is caught in the editor rather than in a commit. Action: `app:Render`.
+  </Step>
+  <Step title="Helm check — does that chart and version exist?">
+    `POST /api/apps/helm-check` takes `{ "helmRepoUrl", "chartName", "chartVersion" }` and answers each question separately:
+
+    ```json
+    { "repoReachable": true, "chartFound": true, "versionFound": false,
+      "latestVersion": "1.17.2",
+      "availableVersions": ["1.17.2", "1.17.1", "1.17.0"] }
+    ```
+
+    `repoReachable: false` with an `error` string is a URL or network problem; `chartFound: false` on a reachable repo means the chart name is wrong; `versionFound: false` means the version is. At most 20 versions come back, newest first. Both `https://` and `oci://` sources are supported. Action: `app:HelmCheck`.
+  </Step>
+  <Step title="Helm values — start from the chart's own defaults">
+    `POST /api/apps/helm-values` takes the same body and returns `{ "values": "..." }` — the chart's default `values.yaml`. Use it as the starting point for a values template instead of guessing key names. Same action, `app:HelmCheck`.
+  </Step>
+</Steps>
+
+## The enabled flag
+
+`enabled: false` keeps a definition in the catalog but out of the cluster-creation picker, which reads `GET /api/apps/enabled`. Use it to retire an app without deleting its definition — existing clusters that already declare it keep working, since their manifests are committed and independent of the catalog entry.
+
+Deleting a definition does **not** remove the app from clusters that already have it. It only removes the blueprint, and the enrichment that `GET /api/gitlab/clusters/<cluster>/apps` performs — the cluster's declared list will still name the app, just without its chart metadata.
+
+## Tanzu packages
+
+`isTanzuPackage: true` changes what gets committed. Instead of generating a Helm-sourced Application plus a values file, Celum commits every entry in `packageFiles` under `clusters/<cluster>/apps/packages/<app>/`, generates a `kustomization.yaml` for that directory, and points an ArgoCD Application at the directory path. Package file contents are themselves Go templates, rendered with `ClusterName` and `Namespace`.
+
+Adding a Tanzu-flagged app with no `packageFiles` fails with `422` and tells you to add them to the definition first — the check happens before anything is committed.
+
+`extraResources` works the same way for non-Tanzu apps: the named files are committed under `clusters/<cluster>/apps/resources/<app>/` and become a third source on the generated Application, so a chart can ship with the ConfigMaps or CRs it needs.
+
+## Import and export
+
+The whole catalog moves between installations as one JSON document.
+
+- `GET /api/apps/export` returns every definition with `id`, `createdAt` and `updatedAt` stripped, served as an attachment. Action: `app:Export`.
+- `POST /api/apps/import` accepts that array and **upserts by `name`** — matching names are updated in place, new ones created. The response counts both and lists per-app failures rather than aborting the batch:
+
+```json
+{ "created": 3, "updated": 8, "errors": [] }
+```
+
+Because the key is `name`, an export/import round-trip is idempotent, and renaming an app in the source installation creates a second definition in the target rather than renaming the existing one.
+
+## Permissions
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| List the catalog (all or enabled) | `app:List` | `krn:vks:app:*` |
+| Read one definition | `app:Get` | `krn:vks:app:<id>` |
+| Create / update / delete | `app:Create` / `app:Update` / `app:Delete` | `krn:vks:app:*` · `krn:vks:app:<id>` |
+| Render a values template | `app:Render` | `krn:vks:app:*` |
+| Validate a chart or fetch its values | `app:HelmCheck` | `krn:vks:app:*` |
+| Export / import the catalog | `app:Export` / `app:Import` | `krn:vks:app:*` |
+
+Note that `app:Delete` is scoped per definition while `app:Create` is not — you can grant deletion of specific apps without granting creation.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Repositories & manifests" icon="code-commit" href="/gitops/repositories-and-manifests">
+    What actually gets committed when a definition is added to a cluster.
+  </Card>
+
+  <Card title="Charts & the mirror" icon="magnifying-glass" href="/gitops/charts">
+    Finding a chart to point a definition at, and why a version list can come back empty.
+  </Card>
+
+  <Card title="Cluster templates" icon="copy" href="/clusters/templates">
+    The same Go-template model applied to whole clusters rather than single apps.
+  </Card>
+
+  <Card title="Day-2 operations" icon="gauge-high" href="/clusters/day-2-operations">
+    The Helm view of what a definition eventually becomes on the cluster.
+  </Card>
+</CardGroup>
+
+<Note>
+  **Celum AI** reads this catalog directly — `list_apps` returns the definitions (with `kind=enabled` for the creation-time subset), `get_app` returns one in full including its values template, and `search_helm_charts` covers the discovery step before you add one.
+</Note>

@@ -1,0 +1,162 @@
+---
+title: "Repositories & manifests"
+description: "Registering Git sources with a branch, token and default flag, and how adding or removing a cluster's app becomes a real GitLab commit — plus the declared-versus-running distinction."
+icon: "code-commit"
+---
+
+A **repository** is the Git source Celum commits cluster configuration into. Clusters created through GitOps land there, and every app added to a cluster afterwards is a commit against it. Repositories live under **Settings → Repositories** and are stored in Celum's database, not per supervisor.
+
+## Registering a source
+
+```json
+[
+  { "id": "ccc5822a-a717-4947-9324-1fc77bba3948",
+    "name": "platform",
+    "description": "Platform GitOps repository",
+    "repoUrl": "https://gitlab.example.com/platform/gitops.git",
+    "tokenMasked": "***",
+    "branch": "main",
+    "isDefault": true,
+    "createdAt": "2026-04-26T21:43:07Z",
+    "updatedAt": "2026-04-26T21:45:58Z" }
+]
+```
+
+`repoUrl` must include the project path — a bare host is rejected at create time, because the path is what Celum turns into the GitLab project identifier. `branch` is the single branch every read and write targets; there is no per-operation branch override.
+
+<Note>
+  **The token is never returned.** Reads carry `tokenMasked` only, and the create and update responses blank the token field entirely. Supply a token on create, and on update only when you are rotating it — an update with an empty token leaves the stored one untouched.
+</Note>
+
+Two helpers make registration less of a guess:
+
+- `POST /api/repositories/branches` takes `{ "repoUrl", "token" }` — an *unsaved* pair — and returns the branch list, so you can pick a branch before committing to the credentials. It answers `502` with the upstream message when the repository or token is wrong. Action: `repository:ListBranches`.
+- `GET /api/repositories/<id>/check` re-runs that same branch listing against a **saved** repository and returns `{ "ok": true }`, or `{ "ok": false, "error": "..." }` with the reason. It is a reachability and credential probe, and deliberately returns `200` either way so the UI can render the failure inline. Action: `repository:Check`.
+
+Exactly one repository is the default (`PUT /api/repositories/<id>/default`, action `repository:SetDefault`). The default is what cluster operations use when nothing more specific is attached; a supervisor with its own repository attached uses that one instead.
+
+## What gets committed
+
+Every cluster owns a directory in the repository, and its apps are files inside it:
+
+```
+clusters/<cluster>/
+├── project.yaml                     # ArgoCD AppProject, incl. sourceRepos
+└── apps/
+    ├── kustomization.yaml           # the list — this is the declared set
+    ├── cluster-values.yaml          # ConfigMap of cluster-wide values
+    ├── <app>.yaml                   # generated ArgoCD Application
+    ├── values/<app>.yaml            # rendered values template
+    ├── resources/<app>/             # extraResources, if the definition has them
+    └── packages/<app>/              # Tanzu package files, if isTanzuPackage
+```
+
+`apps/kustomization.yaml` is the source of truth for "what is declared". `GET /api/gitlab/clusters/<cluster>/apps` reads it, strips the `.yaml` suffix from each entry to recover app names, and enriches each with chart metadata from the [app catalog](/gitops/app-catalog):
+
+```json
+[
+  { "name": "cert-manager", "displayName": "Cert Manager",
+    "chartName": "cert-manager", "chartVersion": "1.17.2",
+    "helmRepoUrl": "https://charts.jetstack.io",
+    "targetNamespace": "cert-manager", "isTanzuPackage": true },
+  { "name": "external-dns", "displayName": "External DNS",
+    "chartName": "external-dns", "chartVersion": "1.16.1",
+    "helmRepoUrl": "https://kubernetes-sigs.github.io/external-dns",
+    "targetNamespace": "external-dns", "isTanzuPackage": false }
+]
+```
+
+An app present in the file but absent from the catalog still appears — with `name` only. `GET /api/gitlab/clusters` lists the cluster directories, and `GET /api/gitlab/clusters/<cluster>/values` returns the raw `cluster-values.yaml` as YAML.
+
+## Adding an app is a commit
+
+`POST /api/gitlab/clusters/<cluster>/apps` takes `{ "appName", "namespace", "supervisor" }` and writes several files in **one** commit through GitLab's Commits API (`POST /api/v4/projects/:id/repository/commits`), each file an action of type `create`, `update` or `delete`. One request, one commit, one SHA — never a partially applied change:
+
+```json
+{ "commitSha": "9f2c1ab4e7d05c318a2b64f0d7ce9a1b3e5f7c22" }
+```
+
+For a Helm app the commit contains:
+
+<Steps>
+  <Step title="The ArgoCD Application">
+    `apps/<app>.yaml` — a multi-source Application. Source one is the chart (repo, name, `targetRevision`), source two is the GitOps repository itself as a `ref` named `values`, so the chart's `valueFiles` can point at `$values/clusters/<cluster>/apps/values/<app>.yaml`. A definition with `extraResources` gets a third source pointing at the resources directory. Sync policy is automated with prune, self-heal, and `CreateNamespace=true`.
+  </Step>
+  <Step title="The rendered values">
+    `apps/values/<app>.yaml` — the app definition's values template after Go-template substitution.
+  </Step>
+  <Step title="The updated list">
+    `apps/kustomization.yaml`, with the new `<app>.yaml` appended.
+  </Step>
+  <Step title="The project's source list">
+    `project.yaml` gains the chart's Helm repo under `spec.sourceRepos`, if it is not already there — otherwise ArgoCD's AppProject would refuse the new source.
+  </Step>
+</Steps>
+
+Afterwards, and asynchronously, Celum registers the Helm repository with the ArgoCD instance in the target namespace, so the repo is usable there without a manual step.
+
+Two failures happen before anything is committed rather than after: an app already listed in `kustomization.yaml` returns `409`, and a cluster whose existing app files carry no workload-repository reference returns `422` — that reference is how Celum discovers which repository the Application's `$values` source should point at, and it can only be recovered from a file that already exists.
+
+Tanzu packages go through `POST /api/gitlab/clusters/<cluster>/apps/package` (action `gitlab-app:AddPackage`), which commits the definition's package files under `apps/packages/<app>/`, generates that directory's `kustomization.yaml`, and points a directory-sourced Application at it.
+
+**Removal** (`DELETE /api/gitlab/clusters/<cluster>/apps/<app>`) is the same mechanism in reverse: delete `apps/<app>.yaml`, delete `apps/values/<app>.yaml`, rewrite `kustomization.yaml` without the entry — one commit, one SHA. An app that is not listed returns `404`, so a repeat delete is safe.
+
+<Warning>
+  **The token needs `api` scope, not `read_api`.** Reads work fine with `read_api`, so a wrongly scoped token registers cleanly, passes the reachability check, and lists apps — then fails on the first commit. Celum detects that specific rejection and says so explicitly; if you see it, rotate the token in **Settings → Repositories** with the wider scope.
+</Warning>
+
+## Declared versus running
+
+The commit is a declaration, not an installation. Nothing is on the cluster until ArgoCD syncs the Application. That is why two lists exist:
+
+| Question | Endpoint | Reads |
+| --- | --- | --- |
+| What is this cluster **supposed** to run? | `GET /api/gitlab/clusters/<cluster>/apps` | `apps/kustomization.yaml` in Git |
+| What **is** it running? | `GET /api/clusters/<cluster>/helm-releases` | Helm state, through the tenant kubeconfig |
+
+Read the difference in both directions. Declared but not running means ArgoCD has not synced — check the Application's status on the [instance that owns it](/gitops/argocd#applications), and confirm the AppProject allows the chart's repo. Running but not declared means the release was installed outside GitOps, usually a direct Helm install from the [cluster detail page](/clusters/day-2-operations#helm-releases); a future rebuild of the cluster from Git would not bring it back.
+
+<Note>
+  Celum never reconciles one list into the other. It reports both and leaves the decision to you, because the right resolution differs — sometimes the commit is wrong, sometimes the running state is.
+</Note>
+
+## Permissions
+
+| Task | Action | KRN |
+| --- | --- | --- |
+| List repositories | `repository:List` | `krn:vks:repository:*` |
+| Create a repository | `repository:Create` | `krn:vks:repository:*` |
+| Update / delete | `repository:Update` / `repository:Delete` | `krn:vks:repository:<id>` |
+| Check reachability | `repository:Check` | `krn:vks:repository:<id>` |
+| List branches for an unsaved URL | `repository:ListBranches` | `krn:vks:repository:*` |
+| Set the default | `repository:SetDefault` | `krn:vks:repository:<id>` |
+| List clusters, declared apps, cluster values | `gitlab-app:List` | `krn:vks:gitlab:*` · `krn:vks:gitlab:<cluster>` |
+| Add an app | `gitlab-app:Add` | `krn:vks:gitlab:<cluster>` |
+| Add a Tanzu package | `gitlab-app:AddPackage` | `krn:vks:gitlab:<cluster>` |
+| Remove an app | `gitlab-app:Remove` | `krn:vks:gitlab:<cluster>` |
+
+Because the write actions are scoped per cluster, you can grant a team the ability to change their own cluster's app set without granting it across the fleet.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="App catalog" icon="box-open" href="/gitops/app-catalog">
+    The definitions that become these files, and the values-template caveat when adding to an existing cluster.
+  </Card>
+
+  <Card title="Day-2 operations" icon="gauge-high" href="/clusters/day-2-operations">
+    The running side of the contrast — Helm releases read from the tenant itself.
+  </Card>
+
+  <Card title="Cluster templates" icon="copy" href="/clusters/templates">
+    How a whole cluster's initial file set is generated and committed the same way.
+  </Card>
+
+  <Card title="ArgoCD" icon="rotate" href="/gitops/argocd">
+    The instances that turn these commits into workloads.
+  </Card>
+</CardGroup>
+
+<Note>
+  **Celum AI** reads both sides of the contrast: `list_repositories` for the registered Git sources, `list_cluster_gitops_apps` for what a cluster's repository declares, and `list_cluster_helm_releases` for what it actually runs.
+</Note>

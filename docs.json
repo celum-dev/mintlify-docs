@@ -52,6 +52,17 @@
             ]
           },
           {
+            "group": "GitOps & Apps",
+            "icon": "code-branch",
+            "pages": [
+              "gitops/overview",
+              "gitops/app-catalog",
+              "gitops/argocd",
+              "gitops/repositories-and-manifests",
+              "gitops/charts"
+            ]
+          },
+          {
             "group": "Virtual machines",
             "icon": "server",
             "pages": [
