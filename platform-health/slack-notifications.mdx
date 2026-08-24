@@ -31,7 +31,14 @@ Celum can post to a Slack channel when a **guest-cluster deletion needs approval
     Under **OAuth & Permissions**, add the Bot Token Scopes `chat:write`, `users:read`, and `users:read.email`. Install the app to the workspace and copy the **Bot User OAuth Token** (`xoxb-…`).
   </Step>
   <Step title="Enable interactivity">
-    Under **Interactivity & Shortcuts**, turn interactivity **On** and set the Request URL to `https://<your-api-host>/api/slack/interactions`. Copy the **Signing Secret** from **Basic Information**.
+    Under **Interactivity & Shortcuts**, turn interactivity **On** and set the Request URL to `https://<your-api-host>/api/slack/interactions`. Save the changes.
+  </Step>
+  <Step title="Copy the signing secret">
+    Open **Settings → Basic Information**, scroll to the **App Credentials** card, and find **Signing Secret**. Click **Show**, then copy the value — this is `SLACK_SIGNING_SECRET`.
+
+    <Note>
+      The signing secret is how Celum proves a button click really came from Slack — it verifies the request signature on every `/api/slack/interactions` call. Treat it like a password; if it leaks, use **Regenerate** on the same card and update `SLACK_SIGNING_SECRET`.
+    </Note>
   </Step>
   <Step title="Invite the bot">
     Invite the bot to the target channel (`/invite @your-bot`) and note the channel id (`C0…`) or its `#name`.
