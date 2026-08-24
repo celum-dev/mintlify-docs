@@ -1,0 +1,72 @@
+---
+title: "Slack notifications"
+description: "Post guest-cluster deletion approvals — with Approve/Reject buttons clicked in Slack — and cluster health alerts to a channel."
+icon: "bell"
+---
+
+Celum can post to a Slack channel when a **guest-cluster deletion needs approval** — with **Approve and Reject buttons you click in Slack** — and when a guest cluster's **API server becomes unreachable or recovers**. It is a Slack **bot app**: messages go out over the Web API, and button clicks come back over a signature-verified callback. The integration stays disabled until a bot token is configured.
+
+## What gets posted
+
+| Event | Message |
+| --- | --- |
+| Deletion **requested** | An approval card — cluster, supervisor, requester, reason — with **Approve** / **Reject** buttons and a **Review in Celum** link. |
+| **Approved / Rejected / Cancelled** | The same message is edited in place to show the outcome; the buttons are removed. |
+| **Completed** | Edited to “cluster deleted” once the deletion worker finishes. |
+| **Direct delete** (bypass) | An audit line when a holder of `cluster:DeleteWithoutApproval` deletes without needing approval. |
+| Cluster **unhealthy** | A guest cluster's API server became unreachable, with the reason and any network-policy drop hint. |
+| Cluster **recovered** | The API server is reachable again. |
+
+<Note>
+  A decision made in the Celum interface and one made from a Slack button update the **same** channel message, so the two never disagree.
+</Note>
+
+## Create the Slack app
+
+<Steps>
+  <Step title="Create the app">
+    In the [Slack API dashboard](https://api.slack.com/apps), choose **Create New App → From scratch** and pick your workspace.
+  </Step>
+  <Step title="Add bot scopes">
+    Under **OAuth & Permissions**, add the Bot Token Scopes `chat:write`, `users:read`, and `users:read.email`. Install the app to the workspace and copy the **Bot User OAuth Token** (`xoxb-…`).
+  </Step>
+  <Step title="Enable interactivity">
+    Under **Interactivity & Shortcuts**, turn interactivity **On** and set the Request URL to `https://<your-api-host>/api/slack/interactions`. Copy the **Signing Secret** from **Basic Information**.
+  </Step>
+  <Step title="Invite the bot">
+    Invite the bot to the target channel (`/invite @your-bot`) and note the channel id (`C0…`) or its `#name`.
+  </Step>
+</Steps>
+
+## Configure Celum
+
+Set these on the backend. The two secrets resolve from the secret store first and fall back to the environment (see [Environment variables](/reference/environment-variables)).
+
+| Setting | Value |
+| --- | --- |
+| `SLACK_BOT_TOKEN` | the `xoxb-…` bot token (secret store: `backend/slack#bot_token`) |
+| `SLACK_SIGNING_SECRET` | the app signing secret (secret store: `backend/slack#signing_secret`) |
+| `SLACK_CHANNEL` | the target channel id or `#name` |
+
+An empty `SLACK_BOT_TOKEN` disables the integration — there is no separate enable flag; the boot log reads `Slack notifications disabled`.
+
+## Approving from Slack
+
+The callback that receives a button click is **not** signed in with a Celum session — Slack has no cookie. Trust comes from the Slack **request signature** (verified with `SLACK_SIGNING_SECRET`, within a five-minute window to block replays). The clicker is then authorized like any other approver:
+
+1. their Slack account is resolved to an email (hence the `users:read.email` scope),
+2. their groups are read from **their last Celum login** (cached when they sign in),
+3. the same `cluster:ApproveDelete` check and the two-person rule apply — a requester can never approve their own deletion.
+
+<Warning>
+  A user who has **never signed in to Celum**, or whose approval permission comes only from identity-provider groups they haven't yet presented at a Celum login, will get a private “approve in Celum instead” reply and nothing changes. Approvers whose group membership is assigned directly by email work without a prior login.
+</Warning>
+
+## Cluster health notifications
+
+A background watcher reads the shared cluster-health cache and posts **only on transitions** — reachable → unreachable and back — so a steady state is silent and a backend restart never floods the channel (the first reading of each cluster seeds state without posting). Clusters that are mid-provision or mid-deletion (health unknown) are skipped until they report a definite state. The watcher runs only when Slack is enabled.
+
+## Security notes
+
+- `/api/slack/interactions` is a public, internet-reachable route — Slack must be able to POST to it. It bypasses session auth and route-level IAM by design and is protected solely by signature verification.
+- The bot token and signing secret are credentials: keep them in the secret store (`backend/slack`) in production rather than in a plain `.env`.
