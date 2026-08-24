@@ -105,7 +105,8 @@
               "platform-health/monitoring",
               "platform-health/logs",
               "platform-health/flow-telemetry",
-              "platform-health/infrastructure"
+              "platform-health/infrastructure",
+              "platform-health/slack-notifications"
             ]
           },
           {

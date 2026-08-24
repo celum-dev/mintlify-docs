@@ -94,6 +94,10 @@ Celum is configured entirely through the environment. This page lists what the b
 | `PHPIPAM_SITE` | — | phpIPAM site |
 | `PHPIPAM_SECTION` | — | phpIPAM section |
 | `MCP_ENABLED` | `false` | Mounts the Model Context Protocol endpoint at `/mcp`, authenticated by Bearer token |
+| `SLACK_BOT_TOKEN` | — | Slack bot token (`xoxb-…`). Empty disables Slack notifications entirely. |
+| `SLACK_APP_TOKEN` | — | Slack app-level token (`xapp-…`, scope `connections:write`). Enables **Socket Mode** — inbound interactivity over an outbound WebSocket, for firewalled deployments. |
+| `SLACK_SIGNING_SECRET` | — | Verifies the inbound **Request URL** interactivity callback. Alternative to Socket Mode; needs a public endpoint. |
+| `SLACK_CHANNEL` | — | Target channel id (`C0…`) or `#name` |
 
 ## Secret store
 
@@ -142,6 +146,9 @@ Credential-shaped values can come from Vault or Azure Key Vault instead of the e
 | `OMNI_SERVICE_ACCOUNT_KEY` | `backend/omni` | `service_account_key` |
 | `PHPIPAM_APP_ID` | `backend/phpipam` | `app_id` |
 | `PHPIPAM_TOKEN` | `backend/phpipam` | `token` |
+| `SLACK_BOT_TOKEN` | `backend/slack` | `bot_token` |
+| `SLACK_APP_TOKEN` | `backend/slack` | `app_token` |
+| `SLACK_SIGNING_SECRET` | `backend/slack` | `signing_secret` |
 
 Under Vault the mount is prepended, so `backend/gitlab` is read from `celum/backend/gitlab` by default. Non-credential values — URLs, IDs, site and section names — stay in the environment.
 

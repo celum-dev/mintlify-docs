@@ -1,0 +1,107 @@
+---
+title: "Slack notifications"
+description: "Post guest-cluster deletion approvals — with Approve/Reject buttons clicked in Slack — and cluster health alerts to a channel."
+icon: "bell"
+---
+
+Celum can post to a Slack channel when a **guest-cluster deletion needs approval** — with **Approve and Reject buttons you click in Slack** — and when a guest cluster's **API server becomes unreachable or recovers**. It is a Slack **bot app**: messages go out over the Web API, and button clicks come back either over an **outbound WebSocket (Socket Mode)** or a signature-verified inbound callback. The integration stays disabled until a bot token is configured.
+
+<Note>
+  If your Celum deployment sits **behind a firewall**, use **Socket Mode** — it needs no inbound endpoint. See [Interactivity transport](#interactivity-transport) below.
+</Note>
+
+## What gets posted
+
+| Event | Message |
+| --- | --- |
+| Deletion **requested** | An approval card — cluster, supervisor, requester, reason — with **Approve** / **Reject** buttons and a **Review in Celum** link. |
+| **Approved / Rejected / Cancelled** | The same message is edited in place to show the outcome; the buttons are removed. |
+| **Completed** | Edited to “cluster deleted” once the deletion worker finishes. |
+| **Direct delete** (bypass) | An audit line when a holder of `cluster:DeleteWithoutApproval` deletes without needing approval. |
+| Cluster **unhealthy** | A guest cluster's API server became unreachable, with the reason and any network-policy drop hint. |
+| Cluster **recovered** | The API server is reachable again. |
+
+<Note>
+  A decision made in the Celum interface and one made from a Slack button update the **same** channel message, so the two never disagree.
+</Note>
+
+## Interactivity transport
+
+The Approve/Reject buttons need Slack to reach Celum _inbound_. There are two ways, and you pick **one**:
+
+<CardGroup cols={2}>
+  <Card title="Socket Mode" icon="plug">
+    Celum opens an **outbound** WebSocket to Slack; clicks arrive down that tunnel. **No public endpoint, no inbound firewall hole, no signing secret.** Needs only egress to `slack.com:443` (via your proxy if egress is proxied — `HTTP(S)_PROXY` is honoured). **Use this behind a firewall.** Enabled by `SLACK_APP_TOKEN`.
+  </Card>
+
+  <Card title="Request URL" icon="globe">
+    Slack POSTs to `https://<host>/api/slack/interactions`, authenticated by the **signing secret**. Requires that endpoint be internet-reachable — not an option behind a firewall. Enabled by `SLACK_SIGNING_SECRET`.
+  </Card>
+</CardGroup>
+
+Outbound notifications (the approval card, its edits, cluster health alerts) work the same either way — they only need egress to Slack.
+
+## Create the Slack app
+
+<Steps>
+  <Step title="Create the app">
+    In the [Slack API dashboard](https://api.slack.com/apps), choose **Create New App → From scratch** and pick your workspace.
+  </Step>
+  <Step title="Add bot scopes">
+    Under **OAuth & Permissions**, add the Bot Token Scopes `chat:write`, `users:read`, and `users:read.email`. Install the app to the workspace and copy the **Bot User OAuth Token** (`xoxb-…`).
+  </Step>
+  <Step title="Invite the bot">
+    Invite the bot to the target channel (`/invite @your-bot`) and note the channel id (`C0…`) or its `#name`.
+  </Step>
+  <Step title="Enable interactivity (pick one transport)">
+    <Tabs>
+      <Tab title="Socket Mode (firewalled)">
+        1. **Settings → Socket Mode** → toggle **On**. When prompted, generate an **App-Level Token** with the `connections:write` scope and copy it (`xapp-…`) — this is `SLACK_APP_TOKEN`. (App-level tokens also live under **Settings → Basic Information → App-Level Tokens**.)
+        2. **Features → Interactivity & Shortcuts** → toggle **On**. With Socket Mode enabled, Slack does not ask for a Request URL.
+      </Tab>
+      <Tab title="Request URL (public)">
+        1. **Features → Interactivity & Shortcuts** → toggle **On** and set the Request URL to `https://<your-api-host>/api/slack/interactions`. Save.
+        2. **Settings → Basic Information → App Credentials** → **Signing Secret** → **Show** → copy the value — this is `SLACK_SIGNING_SECRET`.
+
+        <Note>
+          The signing secret is how Celum proves a button click really came from Slack — it verifies the request signature on every `/api/slack/interactions` call. Treat it like a password; if it leaks, use **Regenerate** on the same card and update `SLACK_SIGNING_SECRET`.
+        </Note>
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## Configure Celum
+
+Set these on the backend. The credential values resolve from the secret store first and fall back to the environment (see [Environment variables](/reference/environment-variables)).
+
+| Setting | Value |
+| --- | --- |
+| `SLACK_BOT_TOKEN` | the `xoxb-…` bot token — required (secret store: `backend/slack#bot_token`) |
+| `SLACK_APP_TOKEN` | the `xapp-…` app-level token — **Socket Mode** (secret store: `backend/slack#app_token`) |
+| `SLACK_SIGNING_SECRET` | the app signing secret — **Request URL** (secret store: `backend/slack#signing_secret`) |
+| `SLACK_CHANNEL` | the target channel id or `#name` |
+
+An empty `SLACK_BOT_TOKEN` disables the integration — there is no separate enable flag; the boot log reads `Slack notifications disabled`. Set **either** `SLACK_APP_TOKEN` (Socket Mode — boot logs `socket mode enabled`) **or** `SLACK_SIGNING_SECRET` (Request URL). Behind a firewall, use Socket Mode.
+
+## Approving from Slack
+
+A button click carries no Celum session — Slack has no cookie. Trust comes from the transport itself: the app-level token on the Socket Mode connection, or the Slack **request signature** on the Request URL callback (verified with `SLACK_SIGNING_SECRET`, within a five-minute window to block replays). The clicker is then authorized like any other approver:
+
+1. their Slack account is resolved to an email (hence the `users:read.email` scope),
+2. their groups are read from **their last Celum login** (cached when they sign in),
+3. the same `cluster:ApproveDelete` check and the two-person rule apply — a requester can never approve their own deletion.
+
+<Warning>
+  A user who has **never signed in to Celum**, or whose approval permission comes only from identity-provider groups they haven't yet presented at a Celum login, will get a private “approve in Celum instead” reply and nothing changes. Approvers whose group membership is assigned directly by email work without a prior login.
+</Warning>
+
+## Cluster health notifications
+
+A background watcher reads the shared cluster-health cache and posts **only on transitions** — reachable → unreachable and back — so a steady state is silent and a backend restart never floods the channel (the first reading of each cluster seeds state without posting). Clusters that are mid-provision or mid-deletion (health unknown) are skipped until they report a definite state. The watcher runs only when Slack is enabled.
+
+## Security notes
+
+- **Socket Mode adds no inbound surface** — the connection is dialled out from Celum and authenticated by the app-level token, so nothing needs to be exposed. This is why it's the right choice behind a firewall.
+- **Request URL** mode's `/api/slack/interactions` is a public, internet-reachable route — Slack must be able to POST to it. It bypasses session auth and route-level IAM by design and is protected solely by signature verification. Don't expose it on firewalled deployments — use Socket Mode instead.
+- The bot token, app-level token, and signing secret are credentials: keep them in the secret store (`backend/slack`) in production rather than in a plain `.env`.
