@@ -94,6 +94,10 @@ Celum is configured entirely through the environment. This page lists what the b
 | `PHPIPAM_SITE` | — | phpIPAM site |
 | `PHPIPAM_SECTION` | — | phpIPAM section |
 | `MCP_ENABLED` | `false` | Mounts the Model Context Protocol endpoint at `/mcp`, authenticated by Bearer token |
+| `SLACK_BOT_TOKEN` | — | Slack bot token (`xoxb-…`). Empty disables Slack notifications entirely. |
+| `SLACK_APP_TOKEN` | — | Slack app-level token (`xapp-…`, scope `connections:write`). Enables **Socket Mode** — inbound interactivity over an outbound WebSocket, for firewalled deployments. |
+| `SLACK_SIGNING_SECRET` | — | Verifies the inbound **Request URL** interactivity callback. Alternative to Socket Mode; needs a public endpoint. |
+| `SLACK_CHANNEL` | — | Target channel id (`C0…`) or `#name` |
 
 ## Secret store
 

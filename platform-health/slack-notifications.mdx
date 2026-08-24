@@ -102,5 +102,6 @@ A background watcher reads the shared cluster-health cache and posts **only on t
 
 ## Security notes
 
-- `/api/slack/interactions` is a public, internet-reachable route — Slack must be able to POST to it. It bypasses session auth and route-level IAM by design and is protected solely by signature verification.
-- The bot token and signing secret are credentials: keep them in the secret store (`backend/slack`) in production rather than in a plain `.env`.
+- **Socket Mode adds no inbound surface** — the connection is dialled out from Celum and authenticated by the app-level token, so nothing needs to be exposed. This is why it's the right choice behind a firewall.
+- **Request URL** mode's `/api/slack/interactions` is a public, internet-reachable route — Slack must be able to POST to it. It bypasses session auth and route-level IAM by design and is protected solely by signature verification. Don't expose it on firewalled deployments — use Socket Mode instead.
+- The bot token, app-level token, and signing secret are credentials: keep them in the secret store (`backend/slack`) in production rather than in a plain `.env`.
