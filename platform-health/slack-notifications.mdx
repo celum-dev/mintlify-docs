@@ -86,7 +86,7 @@ An empty `SLACK_BOT_TOKEN` disables the integration — there is no separate ena
 
 ## Approving from Slack
 
-The callback that receives a button click is **not** signed in with a Celum session — Slack has no cookie. Trust comes from the Slack **request signature** (verified with `SLACK_SIGNING_SECRET`, within a five-minute window to block replays). The clicker is then authorized like any other approver:
+A button click carries no Celum session — Slack has no cookie. Trust comes from the transport itself: the app-level token on the Socket Mode connection, or the Slack **request signature** on the Request URL callback (verified with `SLACK_SIGNING_SECRET`, within a five-minute window to block replays). The clicker is then authorized like any other approver:
 
 1. their Slack account is resolved to an email (hence the `users:read.email` scope),
 2. their groups are read from **their last Celum login** (cached when they sign in),
