@@ -20,6 +20,7 @@ Celum can post to a Slack channel when a **guest-cluster deletion needs approval
 | **Direct delete** (bypass) | An audit line when a holder of `cluster:DeleteWithoutApproval` deletes without needing approval. |
 | Cluster **unhealthy** | A guest cluster's API server became unreachable, with the reason and any network-policy drop hint. |
 | Cluster **recovered** | The API server is reachable again. |
+| **New version deployed** | The What's New changelog for the release — title, summary, and every change — posted a few minutes after a new build boots. |
 
 <Note>
   A decision made in the Celum interface and one made from a Slack button update the **same** channel message, so the two never disagree.
@@ -95,6 +96,18 @@ A button click carries no Celum session — Slack has no cookie. Trust comes fro
 <Warning>
   A user who has **never signed in to Celum**, or whose approval permission comes only from identity-provider groups they haven't yet presented at a Celum login, will get a private “approve in Celum instead” reply and nothing changes. Approvers whose group membership is assigned directly by email work without a prior login.
 </Warning>
+
+## New-version-deployed notification
+
+A few minutes after boot (default 3), the backend posts the What's New entry for the running release, then never re-posts it — it is **deduped by release version**, so a pod restart or a patch rebuild of the same release stays silent and only a genuinely new release announces.
+
+- The changelog comes from the dashboard's own **What's New** source — the backend fetches it from `${FRONTEND_URL}/whats-new.json`, so there's no second copy to keep in sync. The short delay also lets the dashboard finish coming up.
+- Only real `major.minor.patch` builds announce; local/`dev` builds stay silent.
+- If the running release has no What's New entry, nothing is posted (every release is expected to ship with one).
+
+<Note>
+  No extra configuration — this reuses `FRONTEND_URL` and the build's `APP_VERSION`. It's on whenever Slack is enabled.
+</Note>
 
 ## Cluster health notifications
 
